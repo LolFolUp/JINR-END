@@ -1,0 +1,27 @@
+syntax = "proto3";
+package telemetry.v1;
+option go_package = "github.com/aladed/JINR/edge-agent/internal/transport/pb;pb";
+
+message Sample {
+  int64  timestamp_unix_ns = 1;
+  string node_id           = 2;   // source host
+  string source_type       = 3;
+  string entity_type       = 4;   // cpu|gpu|hdd|ram|switch|job|link
+  string entity_id         = 5;
+  string metric_name       = 6;   // exactly from §1.2 contract
+  string unit              = 7;
+  bool   is_categorical    = 8;   // true → only value is meaningful
+
+  double value       = 9;
+  double delta_short = 10;        // 0 for categorical
+  double delta_long  = 11;        // 0 for categorical
+  double rolling_var = 12;        // 0 for categorical
+
+  map<string,string> labels = 13; // job_id, rack, gpu_index, switch_role, link_type...
+}
+
+message Batch {
+  string node_id                 = 1;
+  int64  batch_timestamp_unix_ns = 2;
+  repeated Sample samples        = 3;
+}

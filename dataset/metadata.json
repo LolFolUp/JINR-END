@@ -1,0 +1,255 @@
+{
+  "dataset_size": 1000,
+  "healthy_ratio": 0.7,
+  "faulted_ratio": 0.30000000000000004,
+  "fault_types": [
+    "hdd_degradation",
+    "network_congestion",
+    "ram_leak"
+  ],
+  "fault_distribution": "uniform",
+  "node_types": [
+    "cpu",
+    "gpu",
+    "ram",
+    "hdd",
+    "switch",
+    "job",
+    "rca_context"
+  ],
+  "edge_types": [
+    [
+      "cpu",
+      "connected_to",
+      "switch"
+    ],
+    [
+      "gpu",
+      "connected_to",
+      "switch"
+    ],
+    [
+      "ram",
+      "attached_to",
+      "cpu"
+    ],
+    [
+      "hdd",
+      "attached_to",
+      "cpu"
+    ],
+    [
+      "switch",
+      "uplink_to",
+      "switch"
+    ],
+    [
+      "switch",
+      "rev_connected_to_cpu",
+      "cpu"
+    ],
+    [
+      "switch",
+      "rev_connected_to_gpu",
+      "gpu"
+    ],
+    [
+      "cpu",
+      "rev_attached_to_ram",
+      "ram"
+    ],
+    [
+      "cpu",
+      "rev_attached_to_hdd",
+      "hdd"
+    ],
+    [
+      "switch",
+      "rev_uplink_to",
+      "switch"
+    ],
+    [
+      "job",
+      "executes_on",
+      "cpu"
+    ],
+    [
+      "cpu",
+      "rev_executes_on",
+      "job"
+    ],
+    [
+      "job",
+      "reports_to",
+      "rca_context"
+    ],
+    [
+      "switch",
+      "reports_to",
+      "rca_context"
+    ],
+    [
+      "rca_context",
+      "rev_reports_to_job",
+      "job"
+    ],
+    [
+      "rca_context",
+      "rev_reports_to_switch",
+      "switch"
+    ]
+  ],
+  "feature_dimensions": {
+    "cpu": 32,
+    "gpu": 46,
+    "ram": 32,
+    "hdd": 32,
+    "switch": 40,
+    "job": 40,
+    "rca_context": 1
+  },
+  "node_counts": {
+    "cpu": 100,
+    "gpu": 100,
+    "ram": 100,
+    "hdd": 100,
+    "switch": 6,
+    "job": 500,
+    "rca_context": 1
+  },
+  "simulation_steps": 90,
+  "fault_injection_step": 50,
+  "ema_alpha": 0.03,
+  "generation_seed": 42,
+  "scaler_fit_samples": 100,
+  "scaler_summary": {
+    "cpu": {
+      "mean_min": -0.13076648116111755,
+      "mean_max": 0.3537631034851074,
+      "std_min": 0.0015085506020113826,
+      "std_max": 0.16615673899650574
+    },
+    "gpu": {
+      "mean_min": -0.1318080574274063,
+      "mean_max": 0.5088000297546387,
+      "std_min": 0.0014934184728190303,
+      "std_max": 0.49994754791259766
+    },
+    "ram": {
+      "mean_min": -0.1339280903339386,
+      "mean_max": 0.491714209318161,
+      "std_min": 0.0015059958677738905,
+      "std_max": 0.15345020592212677
+    },
+    "hdd": {
+      "mean_min": -0.13048945367336273,
+      "mean_max": 0.3031493127346039,
+      "std_min": 0.0014906186843290925,
+      "std_max": 0.1570945531129837
+    },
+    "switch": {
+      "mean_min": -0.13059589266777039,
+      "mean_max": 0.26431766152381897,
+      "std_min": 0.0014478289522230625,
+      "std_max": 0.15526224672794342
+    },
+    "job": {
+      "mean_min": -0.1323481798171997,
+      "mean_max": 0.5087599754333496,
+      "std_min": 0.0015136274741962552,
+      "std_max": 0.4999600946903229
+    }
+  },
+  "feature_ordering": {
+    "cpu": {
+      "continuous": [
+        "cpu_usage_total_percent",
+        "cpu_user_percent",
+        "cpu_system_percent",
+        "cpu_iowait_percent",
+        "cpu_frequency_mhz",
+        "cpu_temperature_celsius",
+        "cpu_power_watts",
+        "cpu_context_switches_ps"
+      ],
+      "categorical": []
+    },
+    "gpu": {
+      "continuous": [
+        "gpu_utilization_percent",
+        "gpu_memory_used_mb",
+        "gpu_temperature_celsius",
+        "gpu_power_watts",
+        "gpu_sm_clock_mhz",
+        "gpu_memory_clock_mhz",
+        "gpu_tensor_utilization_percent",
+        "gpu_pcie_tx_mb",
+        "gpu_pcie_rx_mb",
+        "gpu_ecc_errors_count",
+        "gpu_fan_speed_percent"
+      ],
+      "categorical": [
+        "gpu_throttle_flag"
+      ]
+    },
+    "ram": {
+      "continuous": [
+        "ram_used_percent",
+        "ram_available_mb",
+        "ram_cached_mb",
+        "ram_swap_used_percent",
+        "ram_bandwidth_mb",
+        "ram_latency_ns",
+        "ram_page_faults_ps",
+        "ram_fragmentation_score"
+      ],
+      "categorical": []
+    },
+    "hdd": {
+      "continuous": [
+        "disk_usage_percent",
+        "disk_read_mb",
+        "disk_write_mb",
+        "disk_read_iops",
+        "disk_write_iops",
+        "disk_latency_ms",
+        "disk_temperature_celsius",
+        "disk_reallocated_sectors"
+      ],
+      "categorical": []
+    },
+    "switch": {
+      "continuous": [
+        "switch_port_utilization_percent",
+        "switch_packet_loss_percent",
+        "switch_crc_errors_count",
+        "switch_latency_ms",
+        "switch_bandwidth_usage_percent",
+        "switch_temperature_celsius",
+        "switch_power_watts",
+        "switch_active_connections_count",
+        "switch_rx_mb",
+        "switch_tx_mb"
+      ],
+      "categorical": []
+    },
+    "job": {
+      "continuous": [
+        "job_cpu_usage_percent",
+        "job_gpu_usage_percent",
+        "job_ram_usage_percent",
+        "job_io_read_mb",
+        "job_io_write_mb",
+        "job_network_rx_mb",
+        "job_network_tx_mb",
+        "job_runtime_seconds",
+        "job_wait_time_seconds"
+      ],
+      "categorical": [
+        "job_priority_encoded",
+        "job_status_encoded"
+      ]
+    }
+  },
+  "categorical_cardinality": 2
+}

@@ -1,0 +1,13 @@
+{
+  "fault_generation": {
+    "fault_types": [
+      "hdd_degradation",
+      "network_congestion",
+      "ram_leak"
+    ],
+    "propagation_algo": "v3_targeted_migration",
+    "severity_max": 0.45,
+    "severity_min": 0.15
+  },
+  "manifest_schema_version": "v2.0"
+}

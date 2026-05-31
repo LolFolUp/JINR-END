@@ -1,0 +1,100 @@
+{
+  "dataset_structure": {
+    "edge_types": [
+      [
+        "cpu",
+        "connected_to",
+        "switch"
+      ],
+      [
+        "gpu",
+        "connected_to",
+        "switch"
+      ],
+      [
+        "ram",
+        "attached_to",
+        "cpu"
+      ],
+      [
+        "hdd",
+        "attached_to",
+        "cpu"
+      ],
+      [
+        "switch",
+        "uplink_to",
+        "switch"
+      ],
+      [
+        "switch",
+        "rev_connected_to_cpu",
+        "cpu"
+      ],
+      [
+        "switch",
+        "rev_connected_to_gpu",
+        "gpu"
+      ],
+      [
+        "cpu",
+        "rev_attached_to_ram",
+        "ram"
+      ],
+      [
+        "cpu",
+        "rev_attached_to_hdd",
+        "hdd"
+      ],
+      [
+        "switch",
+        "rev_uplink_to",
+        "switch"
+      ],
+      [
+        "job",
+        "executes_on",
+        "cpu"
+      ],
+      [
+        "cpu",
+        "rev_executes_on",
+        "job"
+      ],
+      [
+        "job",
+        "reports_to",
+        "rca_context"
+      ],
+      [
+        "switch",
+        "reports_to",
+        "rca_context"
+      ],
+      [
+        "rca_context",
+        "rev_reports_to_job",
+        "job"
+      ],
+      [
+        "rca_context",
+        "rev_reports_to_switch",
+        "switch"
+      ]
+    ],
+    "faulted_graphs": 300,
+    "healthy_graphs": 700,
+    "healthy_ratio": 0.7,
+    "total_graphs": 1000
+  },
+  "manifest_schema_version": "v2.0",
+  "topology_config": {
+    "NUM_HOSTS": 100,
+    "NUM_LEAF": 4,
+    "NUM_SPINE": 2,
+    "edge_generation_version": "v2.0_bfs_temporal",
+    "routing_semantics_version": "v1.0_host_to_leaf_direct",
+    "topology_schema_version": "v1.0",
+    "topology_type": "spine_leaf"
+  }
+}

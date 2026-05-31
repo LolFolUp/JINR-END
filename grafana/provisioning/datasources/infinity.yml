@@ -1,0 +1,15 @@
+apiVersion: 1
+
+datasources:
+  - name: JINR-API
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    uid: jinr_infinity
+    isDefault: true
+    jsonData:
+      # Base URL of the FastAPI container
+      base_url: "http://jinr_api:8080"
+      allowed_hosts:
+        - "http://jinr_api:8080"
+    version: 1
+    editable: false

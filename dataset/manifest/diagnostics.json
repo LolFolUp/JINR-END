@@ -1,0 +1,10 @@
+{
+  "diagnostics_summary": {},
+  "known_limitations": [
+    "Healthy spike injection adds artificial anomalies not in real systems",
+    "BFS topology assumes connected graph; isolated hosts won't receive propagated faults",
+    "TruncExp delays assume uniform hop latency; real networks have variable latency",
+    "Rolling variance computed over only 5 steps; noisy in early simulation"
+  ],
+  "manifest_schema_version": "v2.0"
+}

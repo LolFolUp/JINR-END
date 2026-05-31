@@ -1,0 +1,44 @@
+{
+  "graph_id": 0,
+  "fault_type": "hdd_degradation",
+  "rc_node": {
+    "type": "hdd",
+    "id": "HDD-61",
+    "host_id": 61
+  },
+  "rc_logit": 3.093,
+  "rc_score": 0.956603,
+  "rc_rank": 1,
+  "top5_candidates": [
+    {
+      "type": "hdd",
+      "id": "HDD-61",
+      "score": 0.9566
+    },
+    {
+      "type": "hdd",
+      "id": "HDD-95",
+      "score": 0.004
+    },
+    {
+      "type": "switch",
+      "id": "SWITCH-3",
+      "score": 0.0009
+    },
+    {
+      "type": "hdd",
+      "id": "HDD-21",
+      "score": 0.0007
+    },
+    {
+      "type": "hdd",
+      "id": "HDD-51",
+      "score": 0.0005
+    }
+  ],
+  "victim_nodes": [],
+  "confidence": 0.956603,
+  "gnn_inference_ms": 0,
+  "dataset_version": "v3.0.0",
+  "checkpoint_epoch": 14
+}

@@ -1,0 +1,20 @@
+{
+  "generation_config": {
+    "git_commit": "e168759",
+    "python_version": "3.12.7"
+  },
+  "manifest_schema_version": "v2.0",
+  "reproducibility": {
+    "master_seed": 42,
+    "randomness_sources": [
+      "topology_generation_per_sample",
+      "edge_attribute_sampling_per_sample",
+      "initial_continuous_state_per_sample",
+      "noise_trajectory_per_sample",
+      "fault_severity_per_sample",
+      "victim_selection_per_sample",
+      "healthy_spike_injection_per_sample"
+    ],
+    "seed_derivation": "deterministic_child_seed_sha256"
+  }
+}

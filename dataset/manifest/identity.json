@@ -1,0 +1,9 @@
+{
+  "dataset_identity": {
+    "codename": "v3_targeted_migration",
+    "dataset_hash": "012d3889a1a37bdd32b89eb53dfa6ee6d4fb3076c4e86991db0bfebdb2541eab",
+    "generation_timestamp": "2026-05-22T15:30:09.815443+00:00",
+    "semantic_version": "v3.0.0"
+  },
+  "manifest_schema_version": "v2.0"
+}

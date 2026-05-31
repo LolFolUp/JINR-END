@@ -1,0 +1,24 @@
+{
+  "checksums": {
+    "diagnostics.json": "sha256:11e2ead5dcabfa9ab641f49f8bae00f1a0dc856dd053de460dd3cb4bac7abd5b",
+    "fault_generation.json": "sha256:4827fae85be809de9c4f66f51c8d6bbb6c45eb8168f35a1b6732a0f4319d51ef",
+    "generation_config.json": "sha256:e1cce4aac118bb7969a3db81e2002f34e0a925c8b6ee4d2d1531951afc0fea97",
+    "identity.json": "sha256:801bc0740db4a4a47ae9ce9141b57074c59c7e064fe7c0ccc2013d87c455329e",
+    "lineage.json": "sha256:7e4722f00a04b8ee8f9c95b501caaa86643b3577117a6c63d4ea19596127abe3",
+    "temporal_features.json": "sha256:db135efb19da079ba5fec38c7fa90836260572f7e39bd46054a5aa46650bca15",
+    "topology.json": "sha256:21d7e4f7aa918f27469012ce40075da25e457b74c5737df68f8c137ddcaf097f"
+  },
+  "dataset_hash": "012d3889a1a37bdd32b89eb53dfa6ee6d4fb3076c4e86991db0bfebdb2541eab",
+  "dataset_version": "v3.0.0",
+  "files": {
+    "diagnostics": "diagnostics.json",
+    "fault_generation": "fault_generation.json",
+    "generation_config": "generation_config.json",
+    "identity": "identity.json",
+    "lineage": "lineage.json",
+    "temporal_features": "temporal_features.json",
+    "topology": "topology.json"
+  },
+  "manifest_format": "modular_v2",
+  "manifest_schema_version": "v2.0"
+}

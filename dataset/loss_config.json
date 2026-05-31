@@ -1,0 +1,21 @@
+{
+  "pos_weight": {
+    "cpu": 332.33,
+    "gpu": 332.33,
+    "ram": 332.33,
+    "hdd": 332.33,
+    "switch": 19.0,
+    "job": 1665.67
+  },
+  "fault_types": [
+    "hdd_degradation",
+    "network_congestion",
+    "ram_leak"
+  ],
+  "masking_policy": "victim_nodes_masked",
+  "loss_fn": "BCEWithLogitsLoss",
+  "label_smoothing": 0.0,
+  "num_samples": 1000,
+  "healthy_count": 700,
+  "faulted_count": 300
+}

@@ -1,0 +1,203 @@
+version: '3.9'
+
+services:
+  # =========================================================================
+  # Layer 1: Knowledge Base (Qdrant Vector DB)
+  # =========================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: jinr_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT_API_KEY=qdrant_secret_key
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Layer 1: Context Cache (Redis)
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: jinr_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_storage:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Layer 2: LLM Inference (Ollama with Mistral 7B)
+  # =========================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: jinr_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Main Application (Python)
+  # =========================================================================
+  jinr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jinr_app
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Layer 1: Knowledge
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_API_KEY: qdrant_secret_key
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Layer 2: LLM
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: mistral
+      # Logging
+      LOG_LEVEL: INFO
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./checkpoints:/app/checkpoints
+      - ./dataset:/app/dataset
+    working_dir: /app
+    command: python -m remediation.run
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Telemetry Bus (Go edge-agent → snapshot-engine)
+  # =========================================================================
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: jinr_kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@localhost:9093"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      # Allow messages up to 2 MB (full-snapshot batches can reach ~800 KB after gzip)
+      KAFKA_CFG_MESSAGE_MAX_BYTES: "2097152"
+      KAFKA_CFG_MAX_REQUEST_SIZE: "2097152"
+      KAFKA_CFG_REPLICA_FETCH_MAX_BYTES: "2097152"
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Grafana API  (FastAPI — serves artifacts for Infinity datasource)
+  # =========================================================================
+  jinr_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jinr_api
+    command: uvicorn api.grafana_api:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./dataset:/app/dataset:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+  # =========================================================================
+  # Grafana 11.3.0  (Node Graph + Infinity datasource)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: jinr_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=jinr2024
+      - GF_INSTALL_PLUGINS=yesoreyeram-infinity-datasource
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/jinr_rca.json
+    volumes:
+      - grafana_storage:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      jinr_api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - jinr_network
+    restart: unless-stopped
+
+networks:
+  jinr_network:
+    driver: bridge
+
+volumes:
+  qdrant_storage:
+    driver: local
+  redis_storage:
+    driver: local
+  ollama_models:
+    driver: local
+  grafana_storage:
+    driver: local

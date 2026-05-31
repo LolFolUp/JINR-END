@@ -1,0 +1,130 @@
+{
+  "feature_schema": {
+    "feature_dim_total": {
+      "cpu": 32,
+      "gpu": 46,
+      "hdd": 32,
+      "job": 40,
+      "ram": 32,
+      "rca_context": 1,
+      "switch": 40
+    },
+    "feature_ordering_hash": "46dd271581037f55b7534d1abdb4770a179861307b4ff61b9b45adb4e59a28d3",
+    "features_per_type": {
+      "cpu": [
+        "cpu_usage_total_percent",
+        "cpu_user_percent",
+        "cpu_system_percent",
+        "cpu_iowait_percent",
+        "cpu_frequency_mhz",
+        "cpu_temperature_celsius",
+        "cpu_power_watts",
+        "cpu_context_switches_ps"
+      ],
+      "gpu": [
+        "gpu_utilization_percent",
+        "gpu_memory_used_mb",
+        "gpu_temperature_celsius",
+        "gpu_power_watts",
+        "gpu_sm_clock_mhz",
+        "gpu_memory_clock_mhz",
+        "gpu_tensor_utilization_percent",
+        "gpu_pcie_tx_mb",
+        "gpu_pcie_rx_mb",
+        "gpu_ecc_errors_count",
+        "gpu_fan_speed_percent",
+        "gpu_throttle_flag"
+      ],
+      "hdd": [
+        "disk_usage_percent",
+        "disk_read_mb",
+        "disk_write_mb",
+        "disk_read_iops",
+        "disk_write_iops",
+        "disk_latency_ms",
+        "disk_temperature_celsius",
+        "disk_reallocated_sectors"
+      ],
+      "job": [
+        "job_cpu_usage_percent",
+        "job_gpu_usage_percent",
+        "job_ram_usage_percent",
+        "job_io_read_mb",
+        "job_io_write_mb",
+        "job_network_rx_mb",
+        "job_network_tx_mb",
+        "job_runtime_seconds",
+        "job_wait_time_seconds",
+        "job_priority_encoded",
+        "job_status_encoded"
+      ],
+      "link_edge": [
+        "link_bandwidth_usage_percent",
+        "link_latency_ms",
+        "link_packet_loss_percent",
+        "link_jitter_ms",
+        "link_crc_errors_count",
+        "link_rx_mb",
+        "link_tx_mb",
+        "link_dropped_packets_count",
+        "link_retransmits_count",
+        "link_queue_depth_count",
+        "link_signal_strength_dbm",
+        "link_power_watts",
+        "link_utilization_ratio",
+        "link_congestion_score",
+        "link_timeout_count",
+        "link_reset_count",
+        "link_availability_percent",
+        "link_error_rate",
+        "link_status_encoded"
+      ],
+      "ram": [
+        "ram_used_percent",
+        "ram_available_mb",
+        "ram_cached_mb",
+        "ram_swap_used_percent",
+        "ram_bandwidth_mb",
+        "ram_latency_ns",
+        "ram_page_faults_ps",
+        "ram_fragmentation_score"
+      ],
+      "switch": [
+        "switch_port_utilization_percent",
+        "switch_packet_loss_percent",
+        "switch_crc_errors_count",
+        "switch_latency_ms",
+        "switch_bandwidth_usage_percent",
+        "switch_temperature_celsius",
+        "switch_power_watts",
+        "switch_active_connections_count",
+        "switch_rx_mb",
+        "switch_tx_mb"
+      ]
+    },
+    "node_types": [
+      "cpu",
+      "gpu",
+      "hdd",
+      "job",
+      "link_edge",
+      "ram",
+      "switch"
+    ]
+  },
+  "manifest_schema_version": "v2.0",
+  "temporal_config": {
+    "DRIFT_AMP": 0.03,
+    "DRIFT_PERIOD": 30,
+    "EMA_ALPHA": 0.03,
+    "FAULT_INJECTION_STEP": 50,
+    "NOISE_SCALE": 0.01,
+    "SIMULATION_STEPS": 90,
+    "temporal_channels": [
+      "value",
+      "delta_short",
+      "delta_long",
+      "rolling_var"
+    ]
+  }
+}

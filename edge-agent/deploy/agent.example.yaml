@@ -1,0 +1,21 @@
+node_id: ""                 # empty → hostname
+sample_interval: 5s
+feature:
+  long_window: 60
+  ema_alpha: 0.0645         # MUST match dataset generator (temporal_features.json)
+kafka:
+  brokers: ["localhost:9092"]
+  topic: telemetry.raw
+  partition_key: entity_id  # entity_id | entity_type_entity_id
+collectors:
+  linux_cpu:    { enabled: true }
+  linux_mem:    { enabled: true }
+  linux_disk:   { enabled: true }
+  cgroups_slurm: { enabled: true }
+  nvml_gpu:     { enabled: false }   # enable on GPU nodes (build with -tags nvml)
+  fabric:
+    enabled: false
+    snmp:
+      targets: []
+      community: "public"
+  pmem:         { enabled: true }    # H04 Optane nodes; no-op where PMEM is absent

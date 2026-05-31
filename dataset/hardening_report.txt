@@ -1,0 +1,44 @@
+============================================================
+DATASET HARDENING REPORT
+============================================================
+
+HARDENING CHANGES APPLIED:
+  1. Severity reduced: U(0.7,0.95) -> U(0.15,0.45)
+  2. Stochastic propagation: prob=0.50-0.70 per victim
+  3. Random attenuation: U(0.1,0.9) per victim node
+  4. Noisy victims: amplitude up to 1.05x root cause
+  5. Healthy outliers: spike_prob=0.06, scale=0.08
+  6. Partial failures: not all switch metrics spike
+  7. Root cause noise: Gaussian(0, 0.025-0.03)
+
+OLD vs HARDENED DATASET COMPARISON:
+  Metric                               OLD    HARDENED
+  ----------------------------------------------------
+  rca_accuracy                      1.0000      0.2973
+  val_f1                            1.0000      0.0630
+  val_loss                          0.0004      0.1937
+
+ABLATION TEST RESULTS (untrained model, random init):
+  (Higher = model uses that signal more)
+  mlp_baseline                    rca_acc=0.0000
+  edge_dropout_50pct              rca_acc=0.0000
+  randomized_topology             rca_acc=0.0000
+  feature_ablation                rca_acc=0.0000
+
+RISK ASSESSMENT:
+  Topology useful      : WARNING: topology may not help
+  Shortcut risk        : LOW
+  MLP vs GAT gap       : +0.0000
+  Leakage probability  : LOW
+
+TRAINABILITY ASSESSMENT:
+  Hardened val_f1      : 0.0630
+  Assessment           : HARD -- may need more training epochs
+
+RECOMMENDED NEXT STEPS:
+  - Add multi-hop propagation to make topology essential
+  - Increase propagation_prob for distant victims
+  - Run full 30-epoch training to confirm convergence curve
+  - Compare train/val loss curves for overfitting signs
+
+============================================================

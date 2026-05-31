@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+*.pyo
+artifacts/remediation_report.json
+artifacts/inference_sample.json
+artifacts/gnn_llm_demo_trace.json
+
+# Large GNN dataset raw graphs (never commit; copy path selectively to demo_data/)
+dataset/raw/*.pt
+dataset/v6_topology_screen/raw/*.pt
+dataset/raw_v3_backup/
+dataset/v4/
+dataset/v4_1/
+dataset/v4_2/
+dataset/v4_3/
+dataset/v4_4/
+dataset/v4_test/
+dataset/raw_test/
+dataset/bench_*/
+
+# GNN checkpoint (binary artifact — manage separately or via DVC)
+gnn/checkpoints/*.pt
+checkpoints/*.pt
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Demo samples are small (< 300 KB each) and intentionally tracked
+# demo_data/gnn_samples/*.pt  <- do NOT ignore these
+
+# Logs
+*.log
+edge-agent/err.txt

@@ -1,0 +1,22 @@
+# RAG / LLM remediation module dependencies
+pydantic>=2.0,<3
+numpy>=1.24,<3
+requests>=2.31,<3
+
+# Optional: local embeddings (falls back to bag-of-words if missing)
+sentence-transformers>=2.2,<4
+
+# Thesis architecture stores
+redis>=4.6.0
+fakeredis>=2.0.0
+qdrant-client>=1.7.0
+
+# Optional: local LLM via Ollama
+ollama>=0.3,<1
+
+# Optional: CPU-friendly transformers pipeline
+transformers>=4.36,<5
+torch>=2.0,<3
+
+# Testing
+pytest>=7.4,<9

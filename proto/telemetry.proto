@@ -1,0 +1,39 @@
+syntax = "proto3";
+package telemetry.v1;
+
+// Go: go_package points to the edge-agent module.
+// Python: protoc --python_out=. --pyi_out=. proto/telemetry.proto
+option go_package = "github.com/aladed/JINR/edge-agent/internal/transport/pb;pb";
+
+// Sample carries one metric observation from one entity at one point in time.
+// Categorical metrics (name ends in _encoded / _flag / _status):
+//   is_categorical=true, delta_short/long/rolling_var are 0.
+// Continuous metrics: all four channels are populated.
+message Sample {
+  int64  timestamp_unix_ns = 1;
+  string node_id           = 2;   // source host (e.g. "h04-017")
+  string source_type       = 3;   // "linux" | "cgroups" | "nvml" | "fabric"
+  string entity_type       = 4;   // cpu | gpu | hdd | ram | switch | job | link
+  string entity_id         = 5;   // stable ID, e.g. "h04-017:gpu0", "leaf-01:port12"
+  string metric_name       = 6;   // exactly from dataset/manifest/temporal_features.json
+  string unit              = 7;   // "percent" | "mb" | "celsius" | "mhz" | "watts" | ...
+  bool   is_categorical    = 8;
+
+  // Temporal channels (EMA_ALPHA = 0.0645, long_window = 60 ticks)
+  double value       = 9;
+  double delta_short = 10;   // value(t) - value(t-1)
+  double delta_long  = 11;   // value(t) - EMA(t)
+  double rolling_var = 12;   // population variance over long_window
+
+  // Metadata for graph construction in snapshot-engine
+  map<string,string> labels = 13; // job_id, rack, gpu_index, switch_role, link_type...
+}
+
+// Batch groups all samples collected in one tick from one node.
+// Kafka key: entity_id (or entity_type:entity_id) — ensures ordering per entity.
+// Kafka topic: telemetry.raw
+message Batch {
+  string node_id                 = 1;
+  int64  batch_timestamp_unix_ns = 2;
+  repeated Sample samples        = 3;
+}

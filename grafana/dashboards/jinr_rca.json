@@ -1,0 +1,497 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.3.0" },
+    { "type": "datasource", "id": "yesoreyeram-infinity-datasource", "name": "Infinity", "version": "2.10.0" },
+    { "type": "panel", "id": "nodeGraph", "name": "Node Graph", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" }
+  ],
+  "annotations": { "list": [] },
+  "description": "JINR HPC Root-Cause Analysis — live GNN predictions, topology and remediation playbook",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "title": "Incident Summary",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 45 },
+              { "color": "red", "value": 75 }
+            ]
+          },
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^confidence_pct$/", "values": false },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "GNN Confidence",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/summary",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "confidence_pct", "text": "confidence_pct", "type": "number" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "unit": "string",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 1 },
+      "id": 2,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^fault_type$/", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "Fault Type",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/summary",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "fault_type", "text": "fault_type", "type": "string" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": { "unit": "string", "mappings": [] },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 1 },
+      "id": 3,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^rc_node$/", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "Root-Cause Node",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/summary",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "rc_node", "text": "rc_node", "type": "string" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 3 },
+              { "color": "red", "value": 6 }
+            ]
+          },
+          "unit": "none",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 14, "y": 1 },
+      "id": 4,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^action_count$/", "values": false },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "Remediation Actions",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/summary",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "action_count", "text": "action_count", "type": "number" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "string",
+          "mappings": [
+            { "type": "value", "options": { "PASSED": { "color": "green", "index": 0 }, "BLOCKED": { "color": "red", "index": 1 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 5,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^firewall_status$/", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "Semantic Firewall",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/summary",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "firewall_status", "text": "firewall_status", "type": "string" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 11,
+      "title": "HPC Topology — Anomaly Scores",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "arc__fault" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "displayName", "value": "fault score" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "arc__ok" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } },
+              { "id": "displayName", "value": "healthy" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 16, "w": 14, "x": 0, "y": 6 },
+      "id": 6,
+      "options": {},
+      "title": "Topology Graph",
+      "type": "nodeGraph",
+      "targets": [
+        {
+          "refId": "nodes",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/topology",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "node-graph-nodes",
+          "root_selector": "nodes",
+          "columns": [
+            { "selector": "id",            "text": "id",            "type": "string" },
+            { "selector": "title",         "text": "title",         "type": "string" },
+            { "selector": "subTitle",      "text": "subTitle",      "type": "string" },
+            { "selector": "mainStat",      "text": "mainStat",      "type": "string" },
+            { "selector": "secondaryStat", "text": "secondaryStat", "type": "string" },
+            { "selector": "arc__fault",    "text": "arc__fault",    "type": "number" },
+            { "selector": "arc__ok",       "text": "arc__ok",       "type": "number" }
+          ]
+        },
+        {
+          "refId": "edges",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/topology",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "node-graph-edges",
+          "root_selector": "edges",
+          "columns": [
+            { "selector": "id",       "text": "id",       "type": "string" },
+            { "selector": "source",   "text": "source",   "type": "string" },
+            { "selector": "target",   "text": "target",   "type": "string" },
+            { "selector": "mainStat", "text": "mainStat", "type": "string" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": { "unit": "none", "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 0.45 },
+            { "color": "red", "value": 0.75 }
+          ]}
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 6 },
+      "id": 7,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "values": true, "fields": "" },
+        "orientation": "horizontal",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "title": "Top-5 Candidate Scores",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/scores",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "top5",
+          "columns": [
+            { "selector": "id",    "text": "Node",  "type": "string" },
+            { "selector": "score", "text": "Score", "type": "number" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": { "unit": "none" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "victim_count" },
+            "properties": [{ "id": "displayName", "value": "Victim Nodes" }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 14 },
+      "id": 8,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^victim_count$/", "values": false },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "title": "Affected (Victim) Nodes",
+      "type": "stat",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/scores",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "victim_count", "text": "victim_count", "type": "number" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "id": 12,
+      "title": "Remediation Playbook",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "left", "cellOptions": { "type": "auto" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "step" },
+            "properties": [{ "id": "custom.width", "value": 50 }] },
+          { "matcher": { "id": "byName", "options": "action_id" },
+            "properties": [{ "id": "custom.width", "value": 180 }] },
+          { "matcher": { "id": "byName", "options": "priority" },
+            "properties": [
+              { "id": "custom.width", "value": 90 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                  { "color": "blue", "value": null }
+              ]}},
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                  "critical": { "color": "red",    "index": 0 },
+                  "high":     { "color": "orange", "index": 1 },
+                  "medium":   { "color": "yellow", "index": 2 },
+                  "low":      { "color": "green",  "index": 3 }
+                }}
+              ]}
+            ]
+          },
+          { "matcher": { "id": "byName", "options": "status" },
+            "properties": [
+              { "id": "custom.width", "value": 90 },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                  "pending":  { "color": "yellow", "index": 0 },
+                  "done":     { "color": "green",  "index": 1 },
+                  "failed":   { "color": "red",    "index": 2 }
+                }}
+              ]}
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 23 },
+      "id": 9,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false }
+      },
+      "title": "Remediation Actions",
+      "type": "table",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "jinr_infinity" },
+          "type": "json",
+          "source": "url",
+          "url": "/playbook",
+          "url_options": { "method": "GET" },
+          "parser": "backend",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            { "selector": "step",        "text": "step",        "type": "number" },
+            { "selector": "action_id",   "text": "action_id",   "type": "string" },
+            { "selector": "target",      "text": "target",      "type": "string" },
+            { "selector": "description", "text": "description", "type": "string" },
+            { "selector": "priority",    "text": "priority",    "type": "string" },
+            { "selector": "status",      "text": "status",      "type": "string" }
+          ]
+        }
+      ]
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["jinr", "rca", "hpc"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "JINR HPC — Root-Cause Analysis",
+  "uid": "jinr-rca-v1",
+  "version": 1
+}
