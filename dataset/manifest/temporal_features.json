@@ -116,7 +116,7 @@
   "temporal_config": {
     "DRIFT_AMP": 0.03,
     "DRIFT_PERIOD": 30,
-    "EMA_ALPHA": 0.03,
+    "EMA_ALPHA": 0.0645,
     "FAULT_INJECTION_STEP": 50,
     "NOISE_SCALE": 0.01,
     "SIMULATION_STEPS": 90,

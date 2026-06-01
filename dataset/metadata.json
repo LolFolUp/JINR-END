@@ -1,11 +1,17 @@
 {
-  "dataset_size": 1000,
-  "healthy_ratio": 0.7,
-  "faulted_ratio": 0.30000000000000004,
+  "dataset_size": 4500,
+  "healthy_ratio": 0.4,
+  "faulted_ratio": 0.6,
   "fault_types": [
     "hdd_degradation",
     "network_congestion",
-    "ram_leak"
+    "ram_leak",
+    "cpu_frequency_drop",
+    "cpu_cache_thrashing",
+    "memory_bandwidth_saturation",
+    "swap_thrashing",
+    "gpu_thermal_throttle",
+    "disk_full"
   ],
   "fault_distribution": "uniform",
   "node_types": [
@@ -119,45 +125,45 @@
   },
   "simulation_steps": 90,
   "fault_injection_step": 50,
-  "ema_alpha": 0.03,
+  "ema_alpha": 0.0645,
   "generation_seed": 42,
-  "scaler_fit_samples": 100,
+  "scaler_fit_samples": 10,
   "scaler_summary": {
     "cpu": {
-      "mean_min": -0.13076648116111755,
-      "mean_max": 0.3537631034851074,
-      "std_min": 0.0015085506020113826,
-      "std_max": 0.16615673899650574
+      "mean_min": -0.1297699213027954,
+      "mean_max": 0.36763325333595276,
+      "std_min": 0.0003596913884393871,
+      "std_max": 0.1659565567970276
     },
     "gpu": {
-      "mean_min": -0.1318080574274063,
-      "mean_max": 0.5088000297546387,
-      "std_min": 0.0014934184728190303,
-      "std_max": 0.49994754791259766
+      "mean_min": -0.1305425614118576,
+      "mean_max": 0.5170000195503235,
+      "std_min": 0.0003752600750885904,
+      "std_max": 0.4999609589576721
     },
     "ram": {
-      "mean_min": -0.1339280903339386,
-      "mean_max": 0.491714209318161,
-      "std_min": 0.0015059958677738905,
-      "std_max": 0.15345020592212677
+      "mean_min": -0.13145193457603455,
+      "mean_max": 0.49481475353240967,
+      "std_min": 0.000379089149646461,
+      "std_max": 0.15670163929462433
     },
     "hdd": {
-      "mean_min": -0.13048945367336273,
-      "mean_max": 0.3031493127346039,
-      "std_min": 0.0014906186843290925,
-      "std_max": 0.1570945531129837
+      "mean_min": -0.12909621000289917,
+      "mean_max": 0.31395599246025085,
+      "std_min": 0.00036952149821445346,
+      "std_max": 0.1638469249010086
     },
     "switch": {
-      "mean_min": -0.13059589266777039,
-      "mean_max": 0.26431766152381897,
-      "std_min": 0.0014478289522230625,
-      "std_max": 0.15526224672794342
+      "mean_min": -0.1330781728029251,
+      "mean_max": 0.2820833623409271,
+      "std_min": 0.00034538054023869336,
+      "std_max": 0.1534174382686615
     },
     "job": {
-      "mean_min": -0.1323481798171997,
-      "mean_max": 0.5087599754333496,
-      "std_min": 0.0015136274741962552,
-      "std_max": 0.4999600946903229
+      "mean_min": -0.1303144097328186,
+      "mean_max": 0.510200023651123,
+      "std_min": 0.0003785753215197474,
+      "std_max": 0.500048041343689
     }
   },
   "feature_ordering": {

@@ -82,10 +82,10 @@
         "switch"
       ]
     ],
-    "faulted_graphs": 300,
-    "healthy_graphs": 700,
-    "healthy_ratio": 0.7,
-    "total_graphs": 1000
+    "faulted_graphs": 2700,
+    "healthy_graphs": 1800,
+    "healthy_ratio": 0.4,
+    "total_graphs": 4500
   },
   "manifest_schema_version": "v2.0",
   "topology_config": {

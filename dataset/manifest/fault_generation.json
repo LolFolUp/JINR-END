@@ -3,9 +3,15 @@
     "fault_types": [
       "hdd_degradation",
       "network_congestion",
-      "ram_leak"
+      "ram_leak",
+      "cpu_frequency_drop",
+      "cpu_cache_thrashing",
+      "memory_bandwidth_saturation",
+      "swap_thrashing",
+      "gpu_thermal_throttle",
+      "disk_full"
     ],
-    "propagation_algo": "v3_targeted_migration",
+    "propagation_algo": "phase2_bfs_temporal_activation",
     "severity_max": 0.45,
     "severity_min": 0.15
   },

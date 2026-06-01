@@ -258,7 +258,6 @@ def build_edge_indices(
 def build_edge_attr(
     edge_indices: Dict[EdgeType, torch.Tensor],
     rng: Optional[np.random.Generator] = None,
-    fault_plan: Optional[Dict] = None,
 ) -> Dict[EdgeType, torch.Tensor]:
     """Return {edge_type: edge_attr} tensors.
 
@@ -295,24 +294,6 @@ def build_edge_attr(
             attrs[edge_type] = torch.ones(
                 num_edges, EDGE_DIM_DUMMY, dtype=torch.float32
             )
-
-    # Change 4: enrich physical link attrs with fault state for network_congestion
-    if fault_plan is not None and fault_plan.get("fault_type") == "network_congestion":
-        rc_switch = fault_plan["rc_node_id"]
-        amp       = fault_plan["severity"] * 0.55
-        fwd_et    = ("cpu", "connected_to", "switch")
-        rev_et    = ("switch", "rev_connected_to_cpu", "cpu")
-        for et, switch_row in [(fwd_et, 1), (rev_et, 0)]:
-            if et not in attrs:
-                continue
-            ei = edge_indices[et]
-            ea = attrs[et].clone()
-            for idx in (ei[switch_row] == rc_switch).nonzero(as_tuple=True)[0].tolist():
-                atten      = float(rng.uniform(0.3, 0.7)) if rng is not None else 0.5
-                ea[idx, 0] += amp * atten        # link_bandwidth_usage_percent
-                ea[idx, 1] += amp * atten * 0.5  # link_latency_ms
-                ea[idx, 2] += amp * 0.3          # link_packet_loss_percent
-            attrs[et] = ea.clamp(0.0, 1.0)
 
     return attrs
 
@@ -372,6 +353,19 @@ def _classify_features(node_type: str) -> Tuple[List[int], List[int]]:
     return continuous, categorical
 
 
+# Module-level cache: compute cont/cat indices once per node type, not per sample.
+# _classify_features() is pure (depends only on FEATURE_SCHEMA which is a module
+# constant), so caching is safe and doesn't affect any statistical behaviour.
+_FEATURE_CLASSIFY_CACHE: Dict[str, Tuple[List[int], List[int]]] = {
+    nt: _classify_features(nt) for nt in NODE_TYPES
+}
+# Also cache feat_to_compact mapping (continuous feature idx → compact position)
+_FEAT_TO_COMPACT_CACHE: Dict[str, Dict[int, int]] = {
+    nt: {fi: pos for pos, fi in enumerate(_FEATURE_CLASSIFY_CACHE[nt][0])}
+    for nt in NODE_TYPES
+}
+
+
 # ---------------------------------------------------------------------------
 # TemporalStateKeeper
 # ---------------------------------------------------------------------------
@@ -412,17 +406,17 @@ class TemporalStateKeeper:
         """
         x = current_values.float()
 
+        # Numerical safety: clean x in-place first so all derived values are safe.
+        # One nan_to_num_ replaces the previous four separate calls.
+        torch.nan_to_num_(x, nan=0.0, posinf=1e6, neginf=-1e6)
+
         delta_short: torch.Tensor = x - self._prev_value
-        self._ema = EMA_ALPHA * x + (1.0 - EMA_ALPHA) * self._ema
+        # In-place EMA update: avoids creating intermediate tensor
+        self._ema.mul_(1.0 - EMA_ALPHA).add_(x, alpha=EMA_ALPHA)
         delta_long: torch.Tensor = x - self._ema
 
-        # Numerical safety -- clamp NaN/Inf before storing
-        x           = torch.nan_to_num(x,           nan=0.0, posinf=1e6, neginf=-1e6)
-        delta_short = torch.nan_to_num(delta_short, nan=0.0, posinf=1e6, neginf=-1e6)
-        delta_long  = torch.nan_to_num(delta_long,  nan=0.0, posinf=1e6, neginf=-1e6)
-        self._ema   = torch.nan_to_num(self._ema,   nan=0.0, posinf=1e6, neginf=-1e6)
-
-        self._prev_value = x.clone()
+        # In-place copy instead of clone() to avoid extra allocation
+        self._prev_value.copy_(x)
 
         # Stack along new last dimension → [N, F, 3]
         return torch.stack([x, delta_short, delta_long], dim=-1)
@@ -458,7 +452,8 @@ _HEALTHY_STD: Dict[str, float] = {
 # Per-step Gaussian noise scale (smooth drift)
 _NOISE_SCALE: float = 0.01
 # Slow sinusoidal drift amplitude and period (adds realism)
-_DRIFT_AMP: float = 0.03
+# v5a: reduced from 0.03 → 0.015 to tighten healthy background (SNR fix)
+_DRIFT_AMP: float = 0.015
 _DRIFT_PERIOD: int = 30   # steps
 
 
@@ -527,7 +522,7 @@ def simulate_healthy_trajectory(
         features  = FEATURE_SCHEMA[node_type]
         num_feats = len(features)
 
-        cont_idx, cat_idx = _classify_features(node_type)
+        cont_idx, cat_idx = _FEATURE_CLASSIFY_CACHE[node_type]
         num_cont = len(cont_idx)
         num_cat  = len(cat_idx)
 
@@ -550,7 +545,7 @@ def simulate_healthy_trajectory(
 
         # ---- run simulation steps ----------------------------------------
         prev_cont = cont_init.clone()
-        cont_history: deque = deque(maxlen=10)
+        cont_history: deque = deque(maxlen=5)
         cont_history.append(prev_cont.clone())
 
         for step in range(1, SIMULATION_STEPS):
@@ -641,7 +636,17 @@ def validate_temporal_tensor(
 # Fault injection -- types, metadata, propagation
 # ---------------------------------------------------------------------------
 
-FAULT_TYPES: List[str] = ["hdd_degradation", "network_congestion", "ram_leak"]
+FAULT_TYPES: List[str] = [
+    "hdd_degradation",            # index 0 — preserved
+    "network_congestion",         # index 1 — preserved
+    "ram_leak",                   # index 2 — preserved
+    "cpu_frequency_drop",         # index 3
+    "cpu_cache_thrashing",        # index 4
+    "memory_bandwidth_saturation", # index 5
+    "swap_thrashing",             # index 6
+    "gpu_thermal_throttle",       # index 7
+    "disk_full",                  # index 8
+]
 
 
 # ---------------------------------------------------------------------------
@@ -661,21 +666,49 @@ def _resolve_fault_plan(
 
     all_anomalies: [(node_type, node_id, feat_idx, total_amplitude, direction, activation_step)]
     """
-    _host_to_leaf, _leaf_to_spines, _job_to_host, host_to_jobs = routing_maps
+    _host_to_leaf, leaf_to_hosts, _job_to_host, host_to_jobs = routing_maps
 
     # --- RC node selection ---
     if fault_type == "hdd_degradation":
         rc_node_type = "hdd"
         rc_node_id   = int(rng.integers(0, NUM_HOSTS))
-        amp          = severity * 0.55
+        # v5a: 0.55→0.90 (forensic audit: rc>bg only 59%, need stronger unique channels)
+        amp          = severity * 0.90
     elif fault_type == "network_congestion":
         rc_node_type = "switch"
         rc_node_id   = int(rng.integers(0, NUM_LEAF))
+        # v5a: 0.55→1.00 (switch RC 1.46σ was BELOW cross-type background 1.48σ)
+        amp          = severity * 1.00
+    elif fault_type == "ram_leak":
+        rc_node_type = "ram"
+        rc_node_id   = int(rng.integers(0, NUM_HOSTS))
+        # v5a: 0.50→0.85 (forensic: rc>bg only 54.8%, weakest RAM fault)
+        amp          = severity * 0.85
+    elif fault_type == "cpu_frequency_drop":
+        rc_node_type = "cpu"
+        rc_node_id   = int(rng.integers(0, NUM_HOSTS))
+        # v5a: 0.55→0.85 (forensic: rc>bg only 60% on v5a, RC at 3.34 sigma
+        # while cross-type background reaches 3.4-3.5 sigma. Boost to ~5 sigma.)
+        amp          = severity * 0.85
+    elif fault_type == "cpu_cache_thrashing":
+        rc_node_type = "cpu"
+        rc_node_id   = int(rng.integers(0, NUM_HOSTS))
         amp          = severity * 0.55
-    else:  # ram_leak
+    elif fault_type in ("memory_bandwidth_saturation", "swap_thrashing"):
         rc_node_type = "ram"
         rc_node_id   = int(rng.integers(0, NUM_HOSTS))
         amp          = severity * 0.50
+    elif fault_type == "gpu_thermal_throttle":
+        rc_node_type = "gpu"
+        rc_node_id   = int(rng.integers(0, NUM_HOSTS))
+        amp          = severity * 0.55
+    elif fault_type == "disk_full":
+        rc_node_type = "hdd"
+        rc_node_id   = int(rng.integers(0, NUM_HOSTS))
+        # v5a: 0.55→1.10 (forensic: rc>bg only 36.5% — CRITICAL, weakest fault)
+        amp          = severity * 1.10
+    else:
+        raise ValueError(f"Unknown fault_type in RC selection: '{fault_type}'")
 
     # --- BFS distances from RC node ---
     distances = _compute_graph_distances(rc_node_type, rc_node_id, routing_maps, max_depth=3)
@@ -699,74 +732,114 @@ def _resolve_fault_plan(
     if fault_type == "hdd_degradation":
         rc_host = rc_node_id
 
-        lat_idx = _feat_idx("hdd", "disk_latency_ms")
-        sec_idx = _feat_idx("hdd", "disk_reallocated_sectors")
-        use_idx = _feat_idx("hdd", "disk_usage_percent")
+        lat_idx  = _feat_idx("hdd", "disk_latency_ms")
+        sec_idx  = _feat_idx("hdd", "disk_reallocated_sectors")
+        temp_idx = _feat_idx("hdd", "disk_temperature_celsius")
+        riops_idx = _feat_idx("hdd", "disk_read_iops")
         rc_noise = float(rng.normal(0.0, 0.03))
 
+        # v5a (2026-05-30): forensic audit showed rc>bg=59.1% only.
+        # Root cause: amp too weak (was severity*0.55, now severity*0.90).
+        # Strategy: make reallocated_sectors DOMINANT (unique SMART health channel
+        # never present in disk_full) so model can reliably distinguish the two.
+        # Also boost latency and read_iops. Temperature kept mild (not distinctive).
+        lat_d1 = int(rng.integers(5, 12))
+        lat_d2 = int(rng.integers(16, 25))
+        sec_d1 = int(rng.integers(8, 16))
+        sec_d2 = int(rng.integers(18, 28))
         all_anomalies += [
-            ("hdd", rc_host, lat_idx, amp + rc_noise, +1.0, rc_act),
-            ("hdd", rc_host, sec_idx, amp * 0.8,      +1.0, rc_act),
-            ("hdd", rc_host, use_idx, amp * 0.4,      +1.0, rc_act),
+            # Reallocated sectors: NOW PRIMARY (3 ramps) — unique health signature,
+            # disk_full NEVER sets this. Cumulative ~1.10
+            ("hdd", rc_host, sec_idx,  amp * 0.55 + rc_noise, +1.0, rc_act),
+            ("hdd", rc_host, sec_idx,  amp * 0.35,            +1.0, rc_act + sec_d1),
+            ("hdd", rc_host, sec_idx,  amp * 0.20,            +1.0, rc_act + sec_d2),
+            # Latency: 3 staggered ramps (still strong, cumulative ~1.10)
+            ("hdd", rc_host, lat_idx,  amp * 0.55,            +1.0, rc_act),
+            ("hdd", rc_host, lat_idx,  amp * 0.35,            +1.0, rc_act + lat_d1),
+            ("hdd", rc_host, lat_idx,  amp * 0.20,            +1.0, rc_act + lat_d2),
+            # Temperature: mild rise (failing mechanics heat up), 2 ramps
+            ("hdd", rc_host, temp_idx, amp * 0.25,            +1.0, rc_act + 4),
+            ("hdd", rc_host, temp_idx, amp * 0.15,            +1.0, rc_act + sec_d1),
+            # Read IOPS: DECREASE (degraded disk serves fewer reads). disk_full
+            # kills WRITE iops — distinct channel.
+            ("hdd", rc_host, riops_idx, amp * 0.45,           -1.0, rc_act + 5),
         ]
 
-        # Cross-type contamination (15–25%): occasionally bleed disk signature onto RAM
+        # Cross-type contamination (20%): mild RAM bleed (kept from before)
         if rng.random() < 0.20:
             frag_idx = _feat_idx("ram", "ram_fragmentation_score")
-            all_anomalies.append(("ram", rc_host, frag_idx, amp * 0.15, +1.0, rc_act))
+            all_anomalies.append(("ram", rc_host, frag_idx, amp * 0.12, +1.0, rc_act))
 
+        # DELAYED, WEAKER cpu victim. cpu IS an RC candidate, so a strong cpu
+        # iowait victim was outranking the hdd RC (cross-type miss). Reduced
+        # 0.6→0.22 and delayed so the hdd RC stays the clear signal centre.
         iowait_idx  = _feat_idx("cpu", "cpu_iowait_percent")
         wait_idx    = _feat_idx("job", "job_wait_time_seconds")
         runtime_idx = _feat_idx("job", "job_runtime_seconds")
         io_r_idx    = _feat_idx("job", "job_io_read_mb")
 
+        hdd_cpu_delay = int(rng.integers(8, 16))
+        hdd_job_delay = int(rng.integers(10, 18))
+
         victim_cpus: List[int] = []
-        if rng.random() < 0.70:
+        if rng.random() < 0.60:
             victim_cpus.append(rc_host)
-            atten  = float(rng.uniform(0.15, 0.9))
-            noise_v = float(rng.normal(0.0, 0.05))
-            act_cpu = activation_step_for("cpu", rc_host)
+            atten  = float(rng.uniform(0.3, 0.7))
+            act_cpu = activation_step_for("cpu", rc_host) + hdd_cpu_delay
             all_anomalies.append(("cpu", rc_host, iowait_idx,
-                                  amp * 0.6 * atten + noise_v, +1.0, act_cpu))
+                                  amp * 0.22 * atten, +1.0, act_cpu))
 
         actual_victim_jobs: List[int] = []
         for jid in host_to_jobs.get(rc_host, []):
-            if rng.random() < 0.60:
+            if rng.random() < 0.55:
                 actual_victim_jobs.append(jid)
-                v_amp   = amp * float(rng.uniform(0.3, 1.1))
-                act_job = activation_step_for("job", jid)
+                v_amp   = amp * float(rng.uniform(0.3, 0.7))
+                act_job = activation_step_for("job", jid) + hdd_job_delay
                 all_anomalies += [
-                    ("job", jid, wait_idx,    v_amp * 0.9, +1.0, act_job),
-                    ("job", jid, runtime_idx, v_amp * 0.5, +1.0, act_job),
-                    ("job", jid, io_r_idx,    v_amp * 0.4, -1.0, act_job),
+                    ("job", jid, wait_idx,    v_amp * 0.40, +1.0, act_job),
+                    ("job", jid, runtime_idx, v_amp * 0.30, +1.0, act_job),
+                    ("job", jid, io_r_idx,    v_amp * 0.25, -1.0, act_job),
                 ]
 
         victim_node_ids = {"cpu": victim_cpus, "job": actual_victim_jobs}
 
     # -----------------------------------------------------------------------
     elif fault_type == "network_congestion":
+        # v5a (2026-05-30): forensic audit showed switch RC (1.46σ cross-type) was
+        # BELOW cross-type background mean (1.48σ). Switch signal must reach 5+σ
+        # cross-type to beat gpu/hdd backgrounds (~2.75σ). amp boosted to 1.00.
+        # Added crc_errors and active_connections for extra unique switch channels.
         rc_switch = rc_node_id
 
-        pkt_idx = _feat_idx("switch", "switch_packet_loss_percent")
-        lat_idx = _feat_idx("switch", "switch_latency_ms")
-        bw_idx  = _feat_idx("switch", "switch_bandwidth_usage_percent")
-        rx_idx  = _feat_idx("switch", "switch_rx_mb")
-        tx_idx  = _feat_idx("switch", "switch_tx_mb")
+        pkt_idx   = _feat_idx("switch", "switch_packet_loss_percent")
+        lat_idx   = _feat_idx("switch", "switch_latency_ms")
+        bw_idx    = _feat_idx("switch", "switch_bandwidth_usage_percent")
+        rx_idx    = _feat_idx("switch", "switch_rx_mb")
+        tx_idx    = _feat_idx("switch", "switch_tx_mb")
+        crc_idx   = _feat_idx("switch", "switch_crc_errors_count")
 
-        if rng.random() < 0.80:
+        # Strong switch RC: 6 ramps across 5 channels (packet_loss always fires)
+        nc_d1 = int(rng.integers(5, 12))
+        all_anomalies += [
+            # packet_loss: 2 staggered (primary unique signal, no other type uses this)
+            ("switch", rc_switch, pkt_idx, amp * 0.90 + float(rng.normal(0, 0.02)), +1.0, rc_act),
+            ("switch", rc_switch, pkt_idx, amp * 0.40, +1.0, rc_act + nc_d1),
+            # latency: 2 staggered
+            ("switch", rc_switch, lat_idx, amp * 0.80, +1.0, rc_act),
+            ("switch", rc_switch, lat_idx, amp * 0.35, +1.0, rc_act + nc_d1),
+            # bandwidth_usage: always fires
+            ("switch", rc_switch, bw_idx,  amp * 0.70, +1.0, rc_act),
+            # crc_errors: unique hardware error channel (not in victim signals)
+            ("switch", rc_switch, crc_idx, amp * 0.50, +1.0, rc_act + 3),
+        ]
+        if rng.random() < 0.70:
             all_anomalies.append(
-                ("switch", rc_switch, pkt_idx,
-                 amp + float(rng.normal(0, 0.03)), +1.0, rc_act))
-        if rng.random() < 0.75:
-            all_anomalies.append(("switch", rc_switch, lat_idx, amp * 0.9, +1.0, rc_act))
-        if rng.random() < 0.60:
-            all_anomalies.append(("switch", rc_switch, bw_idx,  amp * 0.7, +1.0, rc_act))
-        all_anomalies.append(
-            ("switch", rc_switch, rx_idx, amp * float(rng.uniform(0.2, 0.6)), +1.0, rc_act))
-        all_anomalies.append(
-            ("switch", rc_switch, tx_idx, amp * float(rng.uniform(0.2, 0.6)), +1.0, rc_act))
+                ("switch", rc_switch, rx_idx, amp * float(rng.uniform(0.4, 0.7)), +1.0, rc_act))
+        if rng.random() < 0.70:
+            all_anomalies.append(
+                ("switch", rc_switch, tx_idx, amp * float(rng.uniform(0.4, 0.7)), +1.0, rc_act))
 
-        affected_hosts = [h for h in range(NUM_HOSTS) if _host_to_leaf[h] == rc_switch]
+        affected_hosts = leaf_to_hosts.get(rc_switch, [])
 
         iowait_idx  = _feat_idx("cpu", "cpu_iowait_percent")
         pcie_tx_idx = _feat_idx("gpu", "gpu_pcie_tx_mb")
@@ -781,17 +854,13 @@ def _resolve_fault_plan(
 
         for h in affected_hosts:
             compat_cpu = _get_node_type_compatibility(fault_type, "cpu")
-            if rng.random() < 0.55 * compat_cpu:
+            if rng.random() < 0.50 * compat_cpu:
                 victim_cpus_nc.append(h)
-                atten   = float(rng.uniform(0.1, 0.8))
-                nv      = float(rng.normal(0.0, 0.06))
-                act_cpu = activation_step_for("cpu", h)
+                atten   = float(rng.uniform(0.1, 0.6))
+                # v5a: reduced from 0.5 to 0.15 (victim was making cpu outrank switch RC)
+                act_cpu = activation_step_for("cpu", h) + int(rng.integers(6, 12))
                 all_anomalies.append(("cpu", h, iowait_idx,
-                                      amp * 0.5 * atten + nv, +1.0, act_cpu))
-                # Cross-type: occasionally affect cpu_temperature alongside network signal
-                if rng.random() < 0.15:
-                    temp_idx = _feat_idx("cpu", "cpu_temperature_celsius")
-                    all_anomalies.append(("cpu", h, temp_idx, amp * 0.10, +1.0, act_cpu))
+                                      amp * 0.15 * atten, +1.0, act_cpu))
 
             compat_gpu = _get_node_type_compatibility(fault_type, "gpu")
             if rng.random() < 0.50 * compat_gpu:
@@ -819,74 +888,507 @@ def _resolve_fault_plan(
         }
 
     # -----------------------------------------------------------------------
-    else:  # ram_leak — multi-phase causal simulation (v3.0)
+    elif fault_type == "ram_leak":
+        # v4.8 rebalance (2026-05-30): multi-channel RC RAM signature to match
+        # the signal density that made memory_bandwidth_saturation work at 61%.
+        # Previously single-strong used_percent + 2 weaker channels = 3 ramps,
+        # noise outranked RC at 28.9% Hit@1.
+        #
+        # DISTINCT from memory_bw_sat (which uses bandwidth + latency as top
+        # channels) and swap_thrashing (which uses swap_used + page_faults).
+        # Top-2 channels here: used_percent + fragmentation_score.
         rc_host = rc_node_id
 
-        _max_act = SIMULATION_STEPS - 1  # cap so steps_remaining >= 1
+        used_idx      = _feat_idx("ram", "ram_used_percent")
+        frag_idx      = _feat_idx("ram", "ram_fragmentation_score")
+        available_idx = _feat_idx("ram", "ram_available_mb")
+        cached_idx    = _feat_idx("ram", "ram_cached_mb")
+        pf_idx        = _feat_idx("ram", "ram_page_faults_ps")
+        rc_noise      = float(rng.normal(0.0, 0.025))
 
-        # Feature indices
-        pf_idx     = _feat_idx("ram", "ram_page_faults_ps")
-        used_idx   = _feat_idx("ram", "ram_used_percent")
-        frag_idx   = _feat_idx("ram", "ram_fragmentation_score")
-        cached_idx = _feat_idx("ram", "ram_cached_mb")
-        swap_idx   = _feat_idx("ram", "ram_swap_used_percent")
-        lat_idx    = _feat_idx("ram", "ram_latency_ns")
-        sys_idx    = _feat_idx("cpu", "cpu_system_percent")
-
-        # Phase 1 — rc_act (step 50): page faults lead before usage saturates
-        all_anomalies.append(
-            ("ram", rc_host, pf_idx, amp * 0.90, +1.0, rc_act)
-        )
-
-        # Phase 2 — rc_act + 5 (step 55): usage + fragmentation
-        phase2_act = min(rc_act + 5, _max_act)
+        # v5a (2026-05-30): forensic audit showed rc>bg=54.8% only (very weak).
+        # amp boosted to severity*0.85. Strengthen monotonic leak signature.
+        # Distinct from memory_bw_sat (bw+latency) and swap_thrashing (swap+pagefaults).
+        used_d1 = int(rng.integers(6, 12))
+        used_d2 = int(rng.integers(18, 28))
+        frag_d1 = int(rng.integers(8, 15))
+        avail_d1 = int(rng.integers(4, 10))
+        avail_d2 = int(rng.integers(15, 25))
         all_anomalies += [
-            ("ram", rc_host, used_idx, amp * 1.0,  +1.0, phase2_act),
-            ("ram", rc_host, frag_idx, amp * 0.60, +1.0, phase2_act),
+            # Used %: 3 staggered RAMPS (monotonic slow growth — classic leak pattern)
+            ("ram", rc_host, used_idx,      amp * 0.55 + rc_noise, +1.0, rc_act),
+            ("ram", rc_host, used_idx,      amp * 0.40,            +1.0, rc_act + used_d1),
+            ("ram", rc_host, used_idx,      amp * 0.30,            +1.0, rc_act + used_d2),
+            # Fragmentation: 3 staggered (heap allocator pressure — unique to leak)
+            ("ram", rc_host, frag_idx,      amp * 0.60,            +1.0, rc_act),
+            ("ram", rc_host, frag_idx,      amp * 0.40,            +1.0, rc_act + frag_d1),
+            ("ram", rc_host, frag_idx,      amp * 0.20,            +1.0, rc_act + used_d1 + frag_d1),
+            # Available: 2 staggered DECREASE
+            ("ram", rc_host, available_idx, amp * 0.55,            -1.0, rc_act + avail_d1),
+            ("ram", rc_host, available_idx, amp * 0.35,            -1.0, rc_act + avail_d2),
+            # Cached: mild decrease (OS evicts under pressure)
+            ("ram", rc_host, cached_idx,    amp * 0.30,            -1.0, rc_act + 8),
+            # Page faults: LATE secondary (kicks in only after memory pressure)
+            ("ram", rc_host, pf_idx,        amp * 0.40,            +1.0, rc_act + int(rng.integers(25, 40))),
         ]
 
-        # Phase 3 — rc_act + 10 (step 60): cache eviction (INVERSE) + CPU reclaim
-        phase3_act = min(rc_act + 10, _max_act)
-        all_anomalies.append(
-            ("ram", rc_host, cached_idx, amp * 0.55, -1.0, phase3_act)  # cache shrinks
-        )
-        victim_cpus_rl: List[int] = []
-        if rng.random() < 0.80:
-            victim_cpus_rl.append(rc_host)
+        # Decoys: 2 other ram nodes (tiny perturbation on used_percent)
+        ram_decoy_pool = [i for i in range(NODE_COUNTS["ram"]) if i != rc_host]
+        for decoy_id in rng.choice(ram_decoy_pool,
+                                   size=min(2, len(ram_decoy_pool)),
+                                   replace=False):
             all_anomalies.append(
-                ("cpu", rc_host, sys_idx, amp * 0.65, +1.0, phase3_act)
-            )
+                ("ram", int(decoy_id), used_idx, amp * 0.06, +1.0, rc_act))
 
-        # Phase 4 — rc_act + 25 (step 75): swap activation + elevated latency
-        phase4_act = min(rc_act + 25, _max_act)
-        if rng.random() < 0.70:
-            all_anomalies.append(
-                ("ram", rc_host, swap_idx, amp * 1.10, +1.0, phase4_act)
-            )
-        if rng.random() < 0.60:
-            all_anomalies.append(
-                ("ram", rc_host, lat_idx, amp * 0.45, +1.0, phase4_act)
-            )
+        # Cross-type: ram leak occasionally shows mild cpu_iowait signature
+        if rng.random() < 0.20:
+            iowait_idx = _feat_idx("cpu", "cpu_iowait_percent")
+            all_anomalies.append(("cpu", rc_host, iowait_idx, amp * 0.10, +1.0, rc_act + 15))
 
-        # Job victims — rc_act + 28 (step 78): OOM-pressure degradation
-        job_act_base = min(rc_act + 28, _max_act)
-        ram_j_idx   = _feat_idx("job", "job_ram_usage_percent")
+        # Job victims — weakened from prior version (was v_amp*[0.8, 0.5, 0.35])
+        # to keep below RC RAM signal strength.
+        ram_idx     = _feat_idx("job", "job_ram_usage_percent")
         wait_idx    = _feat_idx("job", "job_wait_time_seconds")
         runtime_idx = _feat_idx("job", "job_runtime_seconds")
+        job_delay = int(rng.integers(10, 18))
 
         victim_jobs_rl: List[int] = []
         for jid in host_to_jobs.get(rc_host, []):
-            if rng.random() < 0.55:
+            if rng.random() < 0.50:
                 victim_jobs_rl.append(jid)
-                v_amp   = amp * float(rng.uniform(0.30, 1.10))
-                act_job = max(activation_step_for("job", jid), job_act_base)
+                v_amp   = amp * float(rng.uniform(0.25, 0.65))
+                act_job = activation_step_for("job", jid) + job_delay
                 all_anomalies += [
-                    ("job", jid, ram_j_idx,   v_amp * 0.85, +1.0, act_job),
-                    ("job", jid, wait_idx,    v_amp * 0.50, +1.0, act_job),
-                    ("job", jid, runtime_idx, v_amp * 0.35, +1.0, act_job),
+                    ("job", jid, ram_idx,     v_amp * 0.45, +1.0, act_job),
+                    ("job", jid, wait_idx,    v_amp * 0.30, +1.0, act_job),
+                    ("job", jid, runtime_idx, v_amp * 0.25, +1.0, act_job),
                 ]
 
-        victim_node_ids = {"cpu": victim_cpus_rl, "job": victim_jobs_rl}
+        victim_node_ids = {"job": victim_jobs_rl}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "cpu_frequency_drop":
+        # Source: Antarex/cpufreq + Linux DVFS — frequency drops in discrete steps
+        # as governor cycles through P-states (P0 → P1 → P2 → P3).
+        # Fix v4.5 (2026-05-30): stepped descent (3 inflection points) instead of
+        # single linear ramp. Linear ramp at amp=0.80 was too similar to
+        # cpu_cache_thrashing's ramp pattern → 14.3% Hit@1. Stepped pattern creates
+        # distinctive delta_long signatures unique to DVFS behavior.
+        rc_host = rc_node_id  # cpu and host share the same index
+
+        freq_idx  = _feat_idx("cpu", "cpu_frequency_mhz")
+        power_idx = _feat_idx("cpu", "cpu_power_watts")
+        temp_idx  = _feat_idx("cpu", "cpu_temperature_celsius")
+        user_idx  = _feat_idx("cpu", "cpu_user_percent")
+
+        # v4.9 (2026-05-30): raise RC signal density to match the working RAM
+        # faults (~9 ramps). Was 7 ramps spread thin → 48% Hit@1. Now 10 ramps
+        # across 4 channels (freq stepped, power stepped, temp down, user high).
+        # Diagnostics: cpu_freq_drop misses are cross-type (wrong-type node
+        # outranks the cpu RC) because the cpu RC logit was too low. Denser
+        # signal raises the RC logit above cross-type distractors.
+        step_offset_1 = max(2, int(rng.integers(2, 8)))
+        step_offset_2 = step_offset_1 + int(rng.integers(15, 25))
+        all_anomalies += [
+            # Frequency: 4-stage stepped descent (DVFS P-states), cumulative 1.05
+            ("cpu", rc_host, freq_idx,  amp * 0.40, -1.0, rc_act),
+            ("cpu", rc_host, freq_idx,  amp * 0.30, -1.0, rc_act + step_offset_1),
+            ("cpu", rc_host, freq_idx,  amp * 0.20, -1.0, rc_act + step_offset_2),
+            ("cpu", rc_host, freq_idx,  amp * 0.15, -1.0, rc_act + step_offset_2 + 8),
+            # Power mirrors frequency (P ∝ V²·f): 3-stage, cumulative 0.80
+            ("cpu", rc_host, power_idx, amp * 0.40, -1.0, rc_act),
+            ("cpu", rc_host, power_idx, amp * 0.25, -1.0, rc_act + step_offset_1),
+            ("cpu", rc_host, power_idx, amp * 0.15, -1.0, rc_act + step_offset_2),
+            # Temperature DECREASES (less power = less heat): 2-stage.
+            # Distinguishes from gpu_thermal_throttle (temp UP) and
+            # cpu_cache_thrashing (temp stable).
+            ("cpu", rc_host, temp_idx,  amp * 0.25, -1.0, rc_act + step_offset_1),
+            ("cpu", rc_host, temp_idx,  amp * 0.15, -1.0, rc_act + step_offset_2),
+            # User % stays HIGH (workload continues at lower freq — distinct from
+            # throttle where work stalls). Mild, adds density. NOT usage_total,
+            # NOT context_switches (that's cpu_cache_thrashing's primary).
+            ("cpu", rc_host, user_idx,  amp * 0.30, +1.0, rc_act),
+        ]
+
+        # Decoys: 2 other cpu nodes with minor perturbation
+        cpu_decoy_pool = [i for i in range(NODE_COUNTS["cpu"]) if i != rc_host]
+        for decoy_id in rng.choice(cpu_decoy_pool,
+                                   size=min(2, len(cpu_decoy_pool)),
+                                   replace=False):
+            all_anomalies.append(
+                ("cpu", int(decoy_id), freq_idx, amp * 0.07, -1.0, rc_act))
+
+        # DELAYED, WEAKER job victims (was prob 0.75, runtime 0.60). Job is not
+        # an RC candidate so victims don't cause cross-type misses directly, but
+        # weaker victims keep the RC the clear signal centre.
+        runtime_idx = _feat_idx("job", "job_runtime_seconds")
+        wait_idx    = _feat_idx("job", "job_wait_time_seconds")
+        cf_job_delay = int(rng.integers(8, 16))
+        victim_jobs_cf: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.55:
+                victim_jobs_cf.append(jid)
+                v_amp   = amp * float(rng.uniform(0.3, 0.7))
+                act_job = activation_step_for("job", jid) + cf_job_delay
+                all_anomalies += [
+                    ("job", jid, runtime_idx, v_amp * 0.40, +1.0, act_job),
+                    ("job", jid, wait_idx,    v_amp * 0.25, +1.0, act_job),
+                ]
+
+        victim_node_ids = {"job": victim_jobs_cf}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "cpu_cache_thrashing":
+        # Source: Antarex/ddot — context_switches_der_perc25 is key signal.
+        # Note: cpu_cache_miss_rate does NOT exist in schema.
+        # cpu_context_switches_ps is the honest physical proxy.
+        # Oscillating pattern not supported by 6-tuple architecture; linear ramp used.
+        rc_host = rc_node_id
+
+        ctx_idx   = _feat_idx("cpu", "cpu_context_switches_ps")
+        usage_idx = _feat_idx("cpu", "cpu_usage_total_percent")
+
+        all_anomalies += [
+            ("cpu", rc_host, ctx_idx,   amp * 2.00, +1.0, rc_act),  # boosted: was 1.50
+            ("cpu", rc_host, usage_idx, amp * 0.70, +1.0, rc_act),  # boosted: was 0.50
+        ]
+
+        # Decoys: 3 other cpu nodes (thrashing has diffuse-looking signal)
+        cpu_decoy_pool = [i for i in range(NODE_COUNTS["cpu"]) if i != rc_host]
+        for decoy_id in rng.choice(cpu_decoy_pool,
+                                   size=min(3, len(cpu_decoy_pool)),
+                                   replace=False):
+            all_anomalies.append(
+                ("cpu", int(decoy_id), ctx_idx, amp * 0.10, +1.0, rc_act))
+
+        # Propagation to jobs: cache thrashing slows compute-bound jobs
+        runtime_idx = _feat_idx("job", "job_runtime_seconds")
+        victim_jobs_ct: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.60:
+                victim_jobs_ct.append(jid)
+                v_amp   = amp * float(rng.uniform(0.2, 0.7))
+                act_job = activation_step_for("job", jid)
+                all_anomalies.append(
+                    ("job", jid, runtime_idx, v_amp * 0.45, +1.0, act_job))
+
+        victim_node_ids = {"job": victim_jobs_ct}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "memory_bandwidth_saturation":
+        # Source: Antarex/memeater + Intel MLC + LIKWID bench — memory bus contention
+        # raises queue depth → BW saturates at ~85-95% of peak, latency rises sharply.
+        #
+        # Fix v4.6 (2026-05-30): RC RAM signature must DOMINATE victims.
+        # v4.5 made victims too strong (iowait 0.50, usage 0.20, io_r 0.30) so model
+        # picked CPU victim instead of RC RAM (Hit@1=7.3%, median rank=11).
+        # Now victims are 3-5x weaker than RC and clearly delayed.
+        #
+        # Distinction from ram_leak preserved: ram_leak uses used_percent +
+        # fragmentation + page_faults; memory_bw_sat uses bandwidth + latency only.
+        rc_host = rc_node_id
+
+        bw_idx        = _feat_idx("ram", "ram_bandwidth_mb")
+        latency_idx   = _feat_idx("ram", "ram_latency_ns")
+        cached_idx    = _feat_idx("ram", "ram_cached_mb")
+        available_idx = _feat_idx("ram", "ram_available_mb")
+
+        # PRIMARY (RC node) — high signal density: 9 staggered ramps across
+        # 4 channels (bw / latency / cached / available). Total cumulative amp
+        # per channel pushes RC anomaly density above transient-spike noise level.
+        #
+        # v4.6 had only 4 ramps with cumulative ~1.85 — RC was outranked by
+        # healthy nodes with transient spikes (anomaly density ~10 vs RC ~6).
+        # v4.7 targets RC density ~14-16 (above all noise) by:
+        #   - bandwidth: 4 staggered ramps (cumulative 1.20)
+        #   - latency:   3 staggered ramps (cumulative 1.20)
+        #   - available: 2 staggered DECREASE ramps (cumulative 0.65)
+        #   - cached:    decrease (0.30)
+        # available/cached are not used as primary by any other RAM fault
+        # (ram_leak uses used_percent + fragmentation + page_faults; swap uses
+        # swap_used + page_faults). So no overlap leakage.
+        bw_d1 = int(rng.integers(6, 12))
+        bw_d2 = int(rng.integers(15, 22))
+        bw_d3 = int(rng.integers(25, 35))
+        lat_d1 = int(rng.integers(8, 15))
+        lat_d2 = int(rng.integers(20, 28))
+        all_anomalies += [
+            # Bandwidth: 4 staggered ramps (sustained saturation pattern)
+            ("ram", rc_host, bw_idx,        amp * 0.40, +1.0, rc_act),
+            ("ram", rc_host, bw_idx,        amp * 0.30, +1.0, rc_act + bw_d1),
+            ("ram", rc_host, bw_idx,        amp * 0.30, +1.0, rc_act + bw_d2),
+            ("ram", rc_host, bw_idx,        amp * 0.20, +1.0, rc_act + bw_d3),
+            # Latency: 3 staggered ramps (queue depth growth)
+            ("ram", rc_host, latency_idx,   amp * 0.50, +1.0, rc_act),
+            ("ram", rc_host, latency_idx,   amp * 0.40, +1.0, rc_act + lat_d1),
+            ("ram", rc_host, latency_idx,   amp * 0.30, +1.0, rc_act + lat_d2),
+            # Available MB: 2 staggered DECREASE (effective free bandwidth shrinks)
+            ("ram", rc_host, available_idx, amp * 0.40, -1.0, rc_act + 3),
+            ("ram", rc_host, available_idx, amp * 0.25, -1.0, rc_act + 18),
+            # Cached MB: single decrease
+            ("ram", rc_host, cached_idx,    amp * 0.30, -1.0, rc_act + 7),
+        ]
+
+        # Decoys: 2 other ram nodes (tiny perturbation)
+        ram_decoy_pool = [i for i in range(NODE_COUNTS["ram"]) if i != rc_host]
+        for decoy_id in rng.choice(ram_decoy_pool,
+                                   size=min(2, len(ram_decoy_pool)),
+                                   replace=False):
+            all_anomalies.append(
+                ("ram", int(decoy_id), bw_idx, amp * 0.06, +1.0, rc_act))
+
+        # DELAYED VICTIMS — weak by construction. Total CPU victim cumulative
+        # amp ≤ 0.20 (vs RC 0.85+0.85=1.70 → 8x weaker). Activated 10-18 steps
+        # after RC so temporal ordering also pushes them down in ranking.
+        iowait_idx  = _feat_idx("cpu", "cpu_iowait_percent")
+        runtime_idx = _feat_idx("job", "job_runtime_seconds")
+
+        cpu_victim_delay = int(rng.integers(10, 18))   # longer delay than v4.5
+        job_victim_delay = int(rng.integers(12, 20))
+
+        victim_cpus_mb: List[int] = []
+        if rng.random() < 0.55:
+            victim_cpus_mb.append(rc_host)
+            act_c = activation_step_for("cpu", rc_host) + cpu_victim_delay
+            atten = float(rng.uniform(0.4, 0.9))
+            # iowait only (drop usage_total victim — that channel is owned by
+            # cpu_cache_thrashing and was causing memory_bw_sat to look CPU-rooted)
+            all_anomalies.append(
+                ("cpu", rc_host, iowait_idx, amp * 0.18 * atten, +1.0, act_c)
+            )
+
+        victim_jobs_mb: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.50:
+                victim_jobs_mb.append(jid)
+                v_amp   = amp * float(rng.uniform(0.3, 0.6))
+                act_job = activation_step_for("job", jid) + job_victim_delay
+                # runtime only (drop io_r victim — was making victims too
+                # multi-channel attractive to the ranker)
+                all_anomalies.append(
+                    ("job", jid, runtime_idx, v_amp * 0.30, +1.0, act_job)
+                )
+
+        victim_node_ids = {"cpu": victim_cpus_mb, "job": victim_jobs_mb}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "swap_thrashing":
+        # Source: FINJ/leak + JLab SwapFree↓ + pgmajfault↑.
+        # v4.8 rebalance (2026-05-30): multi-channel + bursty/stepwise pattern to
+        # match RAM RC signal density. Distinctive top-2 channels: swap_used +
+        # page_faults (bursts). Distinguished from ram_leak (slow + uses
+        # used_percent + fragmentation) and from memory_bw_sat (uses bw + latency).
+        #
+        # Stepwise pattern: multiple anomaly activations at staggered steps
+        # simulate the cyclic swap-in/swap-out bursts of true thrashing.
+        # Victims weakened (was iowait 0.85, job wait 1.00 — was outranking RC).
+        rc_host = rc_node_id
+
+        swap_idx  = _feat_idx("ram", "ram_swap_used_percent")
+        pf_idx    = _feat_idx("ram", "ram_page_faults_ps")
+        avail_idx = _feat_idx("ram", "ram_available_mb")
+        cache_idx = _feat_idx("ram", "ram_cached_mb")
+
+        # PRIMARY RC RAM — 10 staggered ramps across 4 channels.
+        # Top-2 channels (swap_used + page_faults) are NOT used by any other
+        # RAM fault as primary, so no signature overlap.
+        swap_d1 = int(rng.integers(8, 16))
+        swap_d2 = int(rng.integers(22, 32))
+        # page_faults uses 3 staggered "bursts" at unequal offsets to mimic
+        # the spikey, cyclic nature of swap I/O storms
+        pf_d1 = int(rng.integers(5, 12))
+        pf_d2 = int(rng.integers(18, 28))
+        avail_d = int(rng.integers(6, 14))
+        all_anomalies += [
+            # Swap used %: 3 staggered (stepwise growth as swap fills)
+            ("ram", rc_host, swap_idx,  amp * 0.50, +1.0, rc_act),
+            ("ram", rc_host, swap_idx,  amp * 0.35, +1.0, rc_act + swap_d1),
+            ("ram", rc_host, swap_idx,  amp * 0.25, +1.0, rc_act + swap_d2),
+            # Page faults: 3 bursts (the discriminating signature of thrashing)
+            ("ram", rc_host, pf_idx,    amp * 0.80, +1.0, rc_act),
+            ("ram", rc_host, pf_idx,    amp * 0.60, +1.0, rc_act + pf_d1),
+            ("ram", rc_host, pf_idx,    amp * 0.50, +1.0, rc_act + pf_d2),
+            # Available: 2 staggered DECREASE
+            ("ram", rc_host, avail_idx, amp * 0.45, -1.0, rc_act),
+            ("ram", rc_host, avail_idx, amp * 0.30, -1.0, rc_act + avail_d),
+            # Cached: 2 staggered DECREASE (OS evicts cache to free pages)
+            ("ram", rc_host, cache_idx, amp * 0.35, -1.0, rc_act + 3),
+            ("ram", rc_host, cache_idx, amp * 0.20, -1.0, rc_act + 15),
+        ]
+
+        # Decoy: 1 other ram node (tiny perturbation)
+        ram_decoy_pool = [i for i in range(NODE_COUNTS["ram"]) if i != rc_host]
+        if len(ram_decoy_pool) > 0:
+            decoy_id = int(rng.choice(ram_decoy_pool))
+            all_anomalies.append(
+                ("ram", decoy_id, swap_idx, amp * 0.06, +1.0, rc_act))
+
+        # DELAYED VICTIMS — weakened from v4.7 (was iowait 0.85, job wait 1.00).
+        # Now well below RC RAM signal strength. Activated 8-15 steps after RC.
+        iowait_idx  = _feat_idx("cpu", "cpu_iowait_percent")
+        wait_idx    = _feat_idx("job", "job_wait_time_seconds")
+        runtime_idx = _feat_idx("job", "job_runtime_seconds")
+
+        cpu_delay = int(rng.integers(8, 15))
+        job_delay = int(rng.integers(10, 18))
+
+        victim_cpus_st: List[int] = []
+        if rng.random() < 0.65:
+            victim_cpus_st.append(rc_host)
+            atten = float(rng.uniform(0.4, 0.8))
+            act_c = activation_step_for("cpu", rc_host) + cpu_delay
+            all_anomalies.append(
+                ("cpu", rc_host, iowait_idx, amp * 0.30 * atten, +1.0, act_c)
+            )
+
+        victim_jobs_st: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.60:
+                victim_jobs_st.append(jid)
+                v_amp   = amp * float(rng.uniform(0.3, 0.7))
+                act_job = activation_step_for("job", jid) + job_delay
+                all_anomalies += [
+                    ("job", jid, wait_idx,    v_amp * 0.40, +1.0, act_job),
+                    ("job", jid, runtime_idx, v_amp * 0.30, +1.0, act_job),
+                ]
+
+        victim_node_ids = {"cpu": victim_cpus_st, "job": victim_jobs_st}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "gpu_thermal_throttle":
+        # Source: NVIDIA NVML SwThermalSlowdown documentation.
+        # Pattern: temperature rises gradually (ramp), THEN clock drops (delayed step).
+        # gpu_throttle_flag is categorical → cannot use 6-tuple continuous injection system.
+        # v5a: added gpu_power_watts (drops when throttled) and gpu_ecc_errors_count
+        # (increases under thermal stress). Now 8 ramps across 5 channels.
+        rc_host = rc_node_id  # gpu index == host index (NODE_COUNTS["gpu"] = NUM_HOSTS)
+
+        temp_idx   = _feat_idx("gpu", "gpu_temperature_celsius")
+        clock_idx  = _feat_idx("gpu", "gpu_sm_clock_mhz")
+        fan_idx    = _feat_idx("gpu", "gpu_fan_speed_percent")
+        power_idx  = _feat_idx("gpu", "gpu_power_watts")
+        ecc_idx    = _feat_idx("gpu", "gpu_ecc_errors_count")
+        mclk_idx   = _feat_idx("gpu", "gpu_memory_clock_mhz")
+
+        # Temperature rises immediately; clock/fan/power delayed by thermal response
+        delayed_act = min(rc_act + 8, SIMULATION_STEPS - 2)
+        gt_d1 = int(rng.integers(5, 12))
+        all_anomalies += [
+            # Temperature: 2 staggered rises (primary: unique to thermal scenario)
+            ("gpu", rc_host, temp_idx,  amp * 1.20, +1.0, rc_act),
+            ("gpu", rc_host, temp_idx,  amp * 0.50, +1.0, rc_act + gt_d1),
+            # Fan: 2 staggered rises (response to heat)
+            ("gpu", rc_host, fan_idx,   amp * 0.90, +1.0, rc_act),
+            ("gpu", rc_host, fan_idx,   amp * 0.35, +1.0, rc_act + gt_d1),
+            # SM clock: DECREASE (throttled — delayed after temp rise)
+            ("gpu", rc_host, clock_idx, amp * 0.80, -1.0, delayed_act),
+            ("gpu", rc_host, clock_idx, amp * 0.35, -1.0, delayed_act + gt_d1),
+            # Power: DECREASE (throttled card reduces power draw)
+            ("gpu", rc_host, power_idx, amp * 0.50, -1.0, delayed_act),
+            # ECC errors: mild increase (soft errors under thermal stress)
+            ("gpu", rc_host, ecc_idx,   amp * 0.35, +1.0, rc_act + 5),
+        ]
+
+        # Decoys: 2 other gpu nodes (thermal diffusion — slightly warm only)
+        gpu_decoy_pool = [i for i in range(NODE_COUNTS["gpu"]) if i != rc_host]
+        for decoy_id in rng.choice(gpu_decoy_pool,
+                                   size=min(2, len(gpu_decoy_pool)),
+                                   replace=False):
+            all_anomalies.append(
+                ("gpu", int(decoy_id), temp_idx, amp * 0.06, +1.0, rc_act))
+
+        # Propagation: slower GPU clock → slower job throughput
+        runtime_idx   = _feat_idx("job", "job_runtime_seconds")
+        gpu_usage_idx = _feat_idx("job", "job_gpu_usage_percent")
+
+        victim_jobs_gt: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.70:
+                victim_jobs_gt.append(jid)
+                v_amp   = amp * float(rng.uniform(0.2, 0.8))
+                act_job = activation_step_for("job", jid)
+                all_anomalies += [
+                    ("job", jid, runtime_idx,   v_amp * 0.55, +1.0, act_job),
+                    ("job", jid, gpu_usage_idx, v_amp * 0.35, -1.0, act_job),
+                ]
+
+        victim_node_ids = {"job": victim_jobs_gt}
+
+    # -----------------------------------------------------------------------
+    elif fault_type == "disk_full":
+        # Source: universal filesystem behavior.
+        # DISTINCTION from hdd_degradation: CAPACITY signal (usage+writes only).
+        # NOT latency (dropped — latency is hdd_degradation's primary).
+        # NOT reallocated_sectors (that's hdd_degradation's unique health signal).
+        #
+        # v5a (2026-05-30): forensic audit showed rc>bg=36.5% (CRITICAL).
+        # Fixes:
+        # 1. Removed disk_latency_ms (shared with hdd_degradation → confusion)
+        # 2. Added disk_write_mb DROP (writes blocked when full) — 2nd unique channel
+        # 3. Boosted amp to severity*1.10 (was 0.55)
+        # 4. Reduced cpu_iowait victim: 0.75*amp → 0.15*amp (was beating HDD RC)
+        # 5. Added disk_read_mb mild DROP (filesystem stalls reads too)
+        rc_host = rc_node_id
+
+        use_idx   = _feat_idx("hdd", "disk_usage_percent")
+        write_idx = _feat_idx("hdd", "disk_write_iops")
+        wmb_idx   = _feat_idx("hdd", "disk_write_mb")
+        rmb_idx   = _feat_idx("hdd", "disk_read_mb")
+
+        # 5 ramps across 3 channels — no latency, no reallocated_sectors
+        # usage_percent: 2 staggered (ramp to ceiling)
+        use_d1 = int(rng.integers(10, 20))
+        all_anomalies += [
+            ("hdd", rc_host, use_idx,   amp * 0.80, +1.0, rc_act),        # strong: ramps to ceiling
+            ("hdd", rc_host, use_idx,   amp * 0.40, +1.0, rc_act + use_d1),  # second push
+            # write_iops: 2 staggered DECREASE (writes fail progressively)
+            ("hdd", rc_host, write_idx, amp * 0.75, -1.0, rc_act),
+            ("hdd", rc_host, write_idx, amp * 0.40, -1.0, rc_act + use_d1),
+            # write_mb: correlated decrease (bytes also drop when iops fail)
+            ("hdd", rc_host, wmb_idx,   amp * 0.50, -1.0, rc_act + 3),
+            # read_mb: mild decrease (filesystem stalls when full)
+            ("hdd", rc_host, rmb_idx,   amp * 0.25, -1.0, rc_act + 6),
+        ]
+
+        # Decoys: 2 other hdd nodes with tiny usage perturbation
+        hdd_decoy_pool = [i for i in range(NODE_COUNTS["hdd"]) if i != rc_host]
+        for decoy_id in rng.choice(hdd_decoy_pool,
+                                   size=min(2, len(hdd_decoy_pool)),
+                                   replace=False):
+            all_anomalies.append(
+                ("hdd", int(decoy_id), use_idx, amp * 0.06, +1.0, rc_act))
+
+        # Victims — WEAKENED to prevent cross-type confusion.
+        # cpu_iowait: was 0.75*amp (beating HDD RC!) → now 0.15*amp (delayed/weak)
+        iowait_idx  = _feat_idx("cpu", "cpu_iowait_percent")
+        io_w_idx    = _feat_idx("job", "job_io_write_mb")
+        wait_idx    = _feat_idx("job", "job_wait_time_seconds")
+
+        df_cpu_delay = int(rng.integers(8, 16))
+        df_job_delay = int(rng.integers(10, 18))
+
+        victim_cpus_df: List[int] = []
+        if rng.random() < 0.65:
+            victim_cpus_df.append(rc_host)
+            atten = float(rng.uniform(0.3, 0.7))
+            act_c = activation_step_for("cpu", rc_host) + df_cpu_delay
+            all_anomalies.append(("cpu", rc_host, iowait_idx, amp * 0.15 * atten, +1.0, act_c))
+
+        victim_jobs_df: List[int] = []
+        for jid in host_to_jobs.get(rc_host, []):
+            if rng.random() < 0.65:
+                victim_jobs_df.append(jid)
+                v_amp   = amp * float(rng.uniform(0.25, 0.60))
+                act_job = activation_step_for("job", jid) + df_job_delay
+                all_anomalies += [
+                    ("job", jid, io_w_idx,  v_amp * 0.55, -1.0, act_job),
+                    ("job", jid, wait_idx,  v_amp * 0.40, +1.0, act_job),
+                ]
+
+        victim_node_ids = {"cpu": victim_cpus_df, "job": victim_jobs_df}
+
+    else:
+        raise ValueError(f"Unknown fault_type in _resolve_fault_plan: '{fault_type}'")
 
     # --- Labels ---
     y_dict: Dict[str, torch.Tensor] = {}
@@ -953,11 +1455,11 @@ def simulate_trajectory_with_fault(
         num_nodes = NODE_COUNTS[node_type]
         features  = FEATURE_SCHEMA[node_type]
         num_feats = len(features)
-        cont_idx, cat_idx = _classify_features(node_type)
+        cont_idx, cat_idx = _FEATURE_CLASSIFY_CACHE[node_type]
         num_cont = len(cont_idx)
         num_cat  = len(cat_idx)
 
-        feat_to_compact: Dict[int, int] = {fi: pos for pos, fi in enumerate(cont_idx)}
+        feat_to_compact = _FEAT_TO_COMPACT_CACHE[node_type]  # cached, not rebuilt per sample
 
         nt_anomalies = [
             (nid, feat_to_compact[fi], amp, d, act)
@@ -977,7 +1479,7 @@ def simulate_trajectory_with_fault(
         keeper = TemporalStateKeeper(full_init)
         last_temporal = keeper.step(full_init)
         prev_cont = cont_init.clone()
-        cont_history: deque = deque(maxlen=10)
+        cont_history: deque = deque(maxlen=5)
         cont_history.append(prev_cont.clone())
 
         for step in range(1, SIMULATION_STEPS):
@@ -1131,9 +1633,15 @@ def _compute_graph_distances(
 def _get_node_type_compatibility(fault_type: str, node_type: str) -> float:
     """Multiplicative factor for cross-type victim selection probability."""
     matrix: Dict[str, Dict[str, float]] = {
-        "hdd_degradation":   {"hdd": 1.0, "cpu": 0.7, "ram": 0.3, "gpu": 0.2, "switch": 0.1, "job": 0.6},
-        "network_congestion":{"switch": 1.0, "cpu": 0.5, "gpu": 0.4, "job": 0.5, "ram": 0.2, "hdd": 0.1},
-        "ram_leak":          {"ram": 1.0, "cpu": 0.6, "job": 0.7, "gpu": 0.2, "hdd": 0.1, "switch": 0.05},
+        "hdd_degradation":            {"hdd": 1.0, "cpu": 0.7, "ram": 0.3, "gpu": 0.2, "switch": 0.1, "job": 0.6},
+        "network_congestion":         {"switch": 1.0, "cpu": 0.5, "gpu": 0.4, "job": 0.5, "ram": 0.2, "hdd": 0.1},
+        "ram_leak":                   {"ram": 1.0, "cpu": 0.6, "job": 0.7, "gpu": 0.2, "hdd": 0.1, "switch": 0.05},
+        "cpu_frequency_drop":         {"cpu": 1.0, "job": 0.7, "gpu": 0.2, "ram": 0.1, "hdd": 0.1, "switch": 0.05},
+        "cpu_cache_thrashing":        {"cpu": 1.0, "job": 0.6, "ram": 0.2, "gpu": 0.15, "hdd": 0.1, "switch": 0.05},
+        "memory_bandwidth_saturation":{"ram": 1.0, "cpu": 0.5, "job": 0.6, "gpu": 0.2, "hdd": 0.1, "switch": 0.05},
+        "swap_thrashing":             {"ram": 1.0, "cpu": 0.7, "job": 0.7, "hdd": 0.3, "gpu": 0.1, "switch": 0.05},
+        "gpu_thermal_throttle":       {"gpu": 1.0, "job": 0.6, "cpu": 0.3, "ram": 0.1, "hdd": 0.05, "switch": 0.05},
+        "disk_full":                  {"hdd": 1.0, "cpu": 0.7, "job": 0.8, "ram": 0.2, "gpu": 0.1, "switch": 0.05},
     }
     return matrix.get(fault_type, {}).get(node_type, 0.1)
 
@@ -1200,27 +1708,26 @@ def _add_healthy_outliers(
     spike_prob: float = 0.08,
     spike_scale: float = 0.12,
 ) -> Dict[str, torch.Tensor]:
-    """Add random harmless spikes to healthy-looking nodes.
+    """Add random harmless spikes to healthy-looking nodes (vectorized).
 
     Makes healthy graphs noisier so the model cannot rely on
-    'clean = healthy' shortcut.
+    'clean = healthy' shortcut.  Same statistical behaviour as before;
+    inner Python loop replaced with masked tensor ops.
     """
     out = {k: v.clone() for k, v in state.items()}
     for nt in NODE_TYPES:
         if nt == "rca_context":
             continue
-        t = out[nt]
+        t = out[nt]               # [n, f, c]
         n, f, _ = t.shape
-        mask = rng.random(size=(n, f)) < spike_prob
-        spikes = rng.normal(0.0, spike_scale, size=(n, f)).astype(np.float32)
-        for ni in range(n):
-            for fi in range(f):
-                if mask[ni, fi]:
-                    cur = float(t[ni, fi, 0].item())
-                    t[ni, fi, 0] = torch.tensor(
-                        max(0.0, min(1.0, cur + spikes[ni, fi])),
-                        dtype=torch.float32,
-                    )
+        mask   = torch.from_numpy(
+            (rng.random(size=(n, f)) < spike_prob).astype(np.float32)
+        )                          # [n, f] float32
+        spikes = torch.from_numpy(
+            rng.normal(0.0, spike_scale, size=(n, f)).astype(np.float32)
+        )                          # [n, f]
+        # Apply spikes only to channel 0 (value), masked by Bernoulli draw
+        t[:, :, 0] = (t[:, :, 0] + mask * spikes).clamp(0.0, 1.0)
         out[nt] = t
     return out
 
@@ -1232,37 +1739,41 @@ def _add_transient_spikes_healthy(
     spike_scale: float = 0.10,
     n_burst_nodes: int = 3,
 ) -> Dict[str, torch.Tensor]:
-    """Inject hard-negative transient spikes into healthy graphs.
+    """Inject hard-negative transient spikes into healthy graphs (vectorized).
 
     Spikes look locally anomalous but are spatially isolated (no propagation),
     forcing the model to use multi-hop context to distinguish true RC from noise.
+    Same statistical behaviour as before; inner Python loop replaced with
+    masked tensor ops.
     """
     out = {k: v.clone() for k, v in state.items()}
 
     # Per-feature independent Bernoulli spikes across all nodes
-    for nt in NODE_TYPES:
-        if nt == "rca_context":
-            continue
+    _non_ctx = [nt for nt in NODE_TYPES if nt != "rca_context"]
+    for nt in _non_ctx:
         t = out[nt]
         n, f, _ = t.shape
-        mask = rng.random(size=(n, f)) < spike_prob
-        signs = rng.choice([-1.0, 1.0], size=(n, f))
-        magnitudes = rng.uniform(spike_scale * 0.5, spike_scale * 1.5, size=(n, f)).astype(np.float32)
-        for ni in range(n):
-            for fi in range(f):
-                if mask[ni, fi]:
-                    delta = float(signs[ni, fi]) * float(magnitudes[ni, fi])
-                    t[ni, fi, 0] = (t[ni, fi, 0] + delta).clamp(0.0, 1.0)
-                    # Reflect spike in delta_short channel too
-                    t[ni, fi, 1] = t[ni, fi, 1] + delta * 0.5
+        mask       = torch.from_numpy(
+            (rng.random(size=(n, f)) < spike_prob).astype(np.float32)
+        )                                                         # [n, f]
+        signs      = torch.from_numpy(
+            rng.choice([-1.0, 1.0], size=(n, f)).astype(np.float32)
+        )                                                         # [n, f]
+        magnitudes = torch.from_numpy(
+            rng.uniform(spike_scale * 0.5, spike_scale * 1.5, size=(n, f)).astype(np.float32)
+        )                                                         # [n, f]
+        delta = mask * signs * magnitudes                         # [n, f]
+        t[:, :, 0] = (t[:, :, 0] + delta).clamp(0.0, 1.0)
+        t[:, :, 1] = t[:, :, 1] + delta * 0.5
         out[nt] = t
 
     # Concentrated burst: pick a few random nodes with multi-feature spikes
+    # (small loop, n_burst_nodes=3 iterations — not a bottleneck)
     for _ in range(n_burst_nodes):
-        nt = rng.choice([x for x in NODE_TYPES if x != "rca_context"])
+        nt    = rng.choice(_non_ctx)
         n, f, _ = out[nt].shape
-        nid = int(rng.integers(0, n))
-        n_feats = max(1, int(rng.integers(1, min(4, f) + 1)))
+        nid      = int(rng.integers(0, n))
+        n_feats  = max(1, int(rng.integers(1, min(4, f) + 1)))
         feat_ids = rng.choice(f, size=n_feats, replace=False)
         for fi in feat_ids:
             delta = float(rng.uniform(0.08, 0.18)) * float(rng.choice([-1, 1]))
@@ -1550,17 +2061,6 @@ def _inject_ram_leak(
     ram_t = _apply_anomaly(ram_t, [rc_host], pf_idx,   amp * 0.80,       +1.0)
     state["ram"] = ram_t
 
-    # Downstream CPU: memory pressure -> kernel reclaim / swap overhead.
-    # Phase-4 fix: ram_leak now structurally corroborates the RC node, like
-    # hdd_degradation and network_congestion (see phase5_ram_diagnostic.md).
-    cpu_t = state["cpu"]
-    sys_idx = _feat_idx("cpu", "cpu_system_percent")
-    cpu_t = _apply_anomaly_stochastic(
-        cpu_t, [rc_host], sys_idx, amp * 0.6, +1.0, rng,
-        propagation_prob=0.70, attenuation_range=(0.15, 0.9), noise_scale=0.05,
-    )
-    state["cpu"] = cpu_t
-
     # Downstream Jobs: stochastic, some may look worse
     victim_jobs: List[int] = []
     job_t = state["job"]
@@ -1579,7 +2079,7 @@ def _inject_ram_leak(
     state = _break_argmax_shortcut(state, "ram", rc_host, rng, n_decoys=4, decoy_scale=0.10)
     state = _add_healthy_outliers(state, rng, spike_prob=0.06, spike_scale=0.08)
 
-    victim_node_ids: Dict[str, List[int]] = {"cpu": [rc_host], "job": victim_jobs}
+    victim_node_ids: Dict[str, List[int]] = {"job": victim_jobs}
 
     y_dict: Dict[str, torch.Tensor] = {}
     loss_mask_dict: Dict[str, torch.Tensor] = {}
@@ -2145,7 +2645,7 @@ DATASET_DIR: str = "dataset"
 RAW_DIR: str = os.path.join(DATASET_DIR, "raw")
 
 # Number of healthy graphs used to fit the global scaler before generation
-_SCALER_FIT_SAMPLES: int = 100
+_SCALER_FIT_SAMPLES: int = 10
 
 
 def _make_dataset_dirs() -> None:
@@ -2204,22 +2704,37 @@ def generate_dataset(
         traj   = simulate_healthy_trajectory(seed=seed_i)
         xd     = build_final_node_features(traj)
         healthy_x_dicts.append(xd)
-        del traj
-        gc.collect()
+        del traj  # no gc.collect() per-sample — Python reference counting handles this
 
     scaler_stats = fit_global_scaler(healthy_x_dicts)
     del healthy_x_dicts
-    gc.collect()
+    gc.collect()  # one collect after bulk alloc, not per-sample
     print("Scaler fitted.")
 
     # ---- Main generation loop ---------------------------------------------
     num_healthy = int(num_samples * healthy_ratio)
     num_faulted = num_samples - num_healthy
 
-    # Build sample index: 0 = healthy, 1/2/3 = fault type index
-    sample_flags: List[int] = [0] * num_healthy + list(
-        rng.integers(1, len(FAULT_TYPES) + 1, size=num_faulted)
-    )
+    # Build sample index with RC-TYPE BALANCED sampling.
+    # Previous bug: uniform over FAULT_TYPES gave 3x more RAM-RC samples
+    # because RAM has 3 fault types (leak, bw_sat, swap_thrashing).
+    # New: sample uniformly over RC_TYPES, then pick a fault type from
+    # that RC's pool. Each RC type ends up with equal sample count.
+    _FAULT_BY_RC: Dict[str, List[str]] = {
+        "hdd":    ["hdd_degradation", "disk_full"],
+        "switch": ["network_congestion"],
+        "ram":    ["ram_leak", "memory_bandwidth_saturation", "swap_thrashing"],
+        "cpu":    ["cpu_frequency_drop", "cpu_cache_thrashing"],
+        "gpu":    ["gpu_thermal_throttle"],
+    }
+    rc_types_list = list(_FAULT_BY_RC.keys())
+    rc_assignments = rng.choice(rc_types_list, size=num_faulted)
+    fault_flags: List[int] = []
+    for rc_t in rc_assignments:
+        ft_name = str(rng.choice(_FAULT_BY_RC[rc_t]))
+        fault_flags.append(FAULT_TYPES.index(ft_name) + 1)
+
+    sample_flags: List[int] = [0] * num_healthy + fault_flags
     rng.shuffle(sample_flags)
 
     fault_type_counts: Dict[str, int] = {ft: 0 for ft in FAULT_TYPES}
@@ -2239,9 +2754,12 @@ def generate_dataset(
         # Per-sample edge structures (unique link state per graph)
         edge_rng     = np.random.default_rng(int(rng.integers(0, 2**31)))
         edge_indices = build_edge_indices(h2l, l2s, j2h)
+        edge_attrs   = build_edge_attr(edge_indices, rng=edge_rng)
+
+        plan: Optional[Dict] = None   # set in faulted branch; None for healthy
+        fault_type: Optional[str] = None
 
         if is_healthy:
-            edge_attrs = build_edge_attr(edge_indices, rng=edge_rng)
             traj      = simulate_healthy_trajectory(seed=sample_seed)
             spike_rng = np.random.default_rng(int(rng.integers(0, 2**31)))
             traj      = _add_transient_spikes_healthy(traj, spike_rng)
@@ -2272,7 +2790,6 @@ def generate_dataset(
 
             # Resolve stochastic fault parameters (no state mutation yet)
             plan = _resolve_fault_plan(fault_type, severity, routing_maps, fault_rng)
-            edge_attrs = build_edge_attr(edge_indices, rng=edge_rng, fault_plan=plan)
 
             # Simulate with fault ramped inside the loop (fixes delta_short)
             temporal_state = simulate_trajectory_with_fault(plan, seed=sample_seed)
@@ -2306,6 +2823,10 @@ def generate_dataset(
 
             fault_type_counts[fault_type] += 1
             faulted_count += 1
+            # Save metadata fields before deleting plan to free memory
+            _meta_rc_node_type = plan["rc_node_type"]
+            _meta_rc_node_id   = int(plan["rc_node_id"])
+            _meta_severity     = float(plan["severity"])
             del temporal_state, plan
 
         graph = assemble_heterodata(
@@ -2317,6 +2838,24 @@ def generate_dataset(
             node_weight_dict=node_weight_dict,
         )
 
+        # Per-graph metadata stored as TENSORS so PyG DataLoader can collate
+        # across a batch without type errors.
+        #   fault_type_idx : index into FAULT_TYPES, -1 = healthy
+        #   rc_type_idx    : index into RC_NODE_TYPES, -1 = healthy
+        #   rc_node_id_t   : RC node index within its type, -1 = healthy
+        #   severity_t     : injection severity, 0.0 = healthy
+        _RC_NODE_TYPES = ["cpu", "gpu", "ram", "hdd", "switch"]
+        if is_healthy:
+            graph.fault_type_idx = torch.tensor(-1, dtype=torch.long)
+            graph.rc_type_idx    = torch.tensor(-1, dtype=torch.long)
+            graph.rc_node_id_t   = torch.tensor(-1, dtype=torch.long)
+            graph.severity_t     = torch.tensor(0.0, dtype=torch.float32)
+        else:
+            graph.fault_type_idx = torch.tensor(FAULT_TYPES.index(fault_type), dtype=torch.long)
+            graph.rc_type_idx    = torch.tensor(_RC_NODE_TYPES.index(_meta_rc_node_type), dtype=torch.long)
+            graph.rc_node_id_t   = torch.tensor(_meta_rc_node_id, dtype=torch.long)
+            graph.severity_t     = torch.tensor(_meta_severity, dtype=torch.float32)
+
         # Validate only faulted graphs (healthy have no positive labels)
         if not is_healthy:
             validate_normalized_graph(graph, scaler_stats)
@@ -2324,10 +2863,12 @@ def generate_dataset(
         path = os.path.join(raw_dir, f"data_{idx}.pt")
         torch.save(graph, path)
 
-        # Release memory immediately
+        # Release memory immediately (Python refcount handles most of this;
+        # gc.collect() only every 100 samples to avoid 40% overhead)
         del xd, norm_x, y_dict, mask_dict, node_weight_dict
         del edge_indices, edge_attrs, graph
-        gc.collect()
+        if (idx + 1) % 100 == 0:
+            gc.collect()
 
         # Progress logging every 50 samples
         if (idx + 1) % 50 == 0:
@@ -2410,12 +2951,12 @@ def _write_generation_manifest(
             "fault_types":      FAULT_TYPES,
             "severity_min":     0.15,
             "severity_max":     0.45,
-            "propagation_algo": "v3_targeted_migration",
+            "propagation_algo": "phase2_bfs_temporal_activation",
         },
         "seeds": {
             "master_seed": base_seed,
         },
-        "feature_schema_version": "v3.0",
+        "feature_schema_version": "v2.0",
     }
 
     dataset_hash = compute_semantic_dataset_hash(semantic_config)
@@ -2443,31 +2984,24 @@ def _write_generation_manifest(
 
     write_dataset_manifest(
         manifest_dir=manifest_dir,
-        dataset_version="v3.0.0",
+        dataset_version="v2.0.0",
         dataset_hash=dataset_hash,
-        codename="v3_targeted_migration",
+        codename="phase2_causal_propagation",
         semantic_config=semantic_config,
         feature_schema={k: list(v) for k, v in FEATURE_SCHEMA.items()},
         total_graphs=num_samples,
         healthy_graphs=healthy_count,
         node_dims=node_dims,
         edge_types=all_edge_types,
-        previous_version="v2.1.0",
+        previous_version="v1.0.0",
         changelog=(
-            "v3.0.0 targeted migration (4 changes): "
-            "(1) Fix leaf_to_hosts routing bug — network_congestion now affects ~25 hosts "
-            "instead of 2 spine IDs. "
-            "(2) Temporal SNR fix — EMA_ALPHA 0.0645→0.030, rolling_var maxlen 5→10, "
-            "_SCALER_FIT_SAMPLES 10→100. "
-            "(3) ram_leak multi-phase causal redesign — 6 features across 4 phases "
-            "(page_faults→used+frag→cached↓+cpu_system→swap+latency→jobs). "
-            "(4) network_congestion edge enrichment — physical link attrs for "
-            "cpu↔rc_switch edges elevated in bandwidth, latency, packet_loss."
+            "Phase-2 hardening: BFS temporal propagation, rolling variance channel, "
+            "cross-type signatures, healthy transient spikes"
         ),
         breaking_changes=[
-            "routing bug fix changes network_congestion fault distribution — "
-            "metrics not comparable to v2.x; full retraining required.",
-            "ram_leak temporal structure changed — v2.x checkpoints are stale.",
+            "Temporal tensor expanded from [N,F,3] to [N,F,4] (added rolling_var)",
+            "Feature dimensionality per node increased (~33%)",
+            "Checkpoints from v1.x incompatible with v2.x",
         ],
     )
 
@@ -2550,25 +3084,49 @@ def save_loss_config(
     num_samples: int = NUM_DATASET_SAMPLES,
     healthy_ratio: float = HEALTHY_RATIO,
     dataset_dir: str = DATASET_DIR,
+    rc_type_fractions: Optional[Dict[str, float]] = None,
 ) -> None:
-    """Save dataset/loss_config.json with pos_weight and masking policy."""
+    """Save dataset/loss_config.json with pos_weight and masking policy.
+
+    pos_weight = neg_labels / pos_labels  (per node type).
+
+    Bug fixed (2026-05-30): the old formula used total_pos=num_faulted for
+    ALL node types, but a CPU-RC fault graph has 0 positives for GPU/RAM/HDD.
+    With 9 fault types and RC-balanced sampling only 1/5 of faulted graphs
+    have a positive label for any given RC node type.  Using num_faulted
+    inflated pos_weight by ~5x (165 instead of ~830 for cpu/gpu/ram/hdd).
+
+    rc_type_fractions: fraction of faulted graphs where each RC node type
+    is the root cause.  Defaults to equal split (1/5 for 5 RC types).
+    """
     os.makedirs(dataset_dir, exist_ok=True)
 
     num_healthy = int(num_samples * healthy_ratio)
     num_faulted = num_samples - num_healthy
 
-    # pos_weight per node type: ratio of negative to positive examples
-    # In faulted graphs: 1 positive per graph, rest negative
+    # Default: balanced RC-type sampling (equal fraction per RC type)
+    RC_NODE_TYPES = ["cpu", "gpu", "ram", "hdd", "switch"]
+    if rc_type_fractions is None:
+        rc_type_fractions = {nt: 1.0 / len(RC_NODE_TYPES) for nt in RC_NODE_TYPES}
+
     pos_weight: Dict[str, float] = {}
     for nt in NODE_TYPES:
-        if nt == "rca_context":
+        if nt in ("rca_context", "job"):
             continue
         n = NODE_COUNTS[nt]
-        # Total positive labels across faulted graphs ≈ num_faulted (1 per graph)
-        # Total negative labels ≈ num_faulted * (n - 1) + num_healthy * n
-        total_pos = float(num_faulted)
-        total_neg = float(num_faulted * (n - 1) + num_healthy * n)
-        pos_weight[nt] = round(total_neg / max(total_pos, 1.0), 2)
+        # How many faulted graphs have a positive label for this node type?
+        frac     = rc_type_fractions.get(nt, 0.0)
+        rc_graphs = int(round(num_faulted * frac))        # graphs with RC of this type
+        non_rc    = num_faulted - rc_graphs               # graphs with different RC type
+
+        # Positive labels: 1 per graph where this type is RC
+        total_pos = float(max(rc_graphs, 1))
+        # Negative labels:
+        #   rc_graphs * (n-1)  — non-RC nodes in graphs where this type IS RC
+        #   non_rc * n         — all nodes in graphs where this type is NOT RC
+        #   num_healthy * n    — all nodes in healthy graphs
+        total_neg = float(rc_graphs * (n - 1) + non_rc * n + num_healthy * n)
+        pos_weight[nt] = round(total_neg / total_pos, 2)
 
     loss_config = {
         "pos_weight":      pos_weight,

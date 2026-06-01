@@ -21,9 +21,8 @@ NUM_JOBS: Final[int] = 500
 SIMULATION_STEPS: Final[int] = 90
 FAULT_INJECTION_STEP: Final[int] = 50
 
-# EMA smoothing coefficient: alpha = 2 / (N + 1), N = 65 ticks (v3.0: longer window
-# preserves delta_long signal over 40-step fault ramps — see v3_migration_report.md)
-EMA_ALPHA: Final[float] = 0.030
+# EMA smoothing coefficient: alpha = 2 / (N + 1), N = 30 ticks
+EMA_ALPHA: Final[float] = 0.0645
 
 # Edge feature dimensionality
 EDGE_DIM_PHYSICAL: Final[int] = 19

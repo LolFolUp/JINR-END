@@ -2,11 +2,12 @@
   "manifest_schema_version": "v2.0",
   "version_lineage": {
     "breaking_changes": [
-      "routing bug fix changes network_congestion fault distribution \u2014 metrics not comparable to v2.x; full retraining required.",
-      "ram_leak temporal structure changed \u2014 v2.x checkpoints are stale."
+      "Temporal tensor expanded from [N,F,3] to [N,F,4] (added rolling_var)",
+      "Feature dimensionality per node increased (~33%)",
+      "Checkpoints from v1.x incompatible with v2.x"
     ],
-    "changelog": "v3.0.0 targeted migration (4 changes): (1) Fix leaf_to_hosts routing bug \u2014 network_congestion now affects ~25 hosts instead of 2 spine IDs. (2) Temporal SNR fix \u2014 EMA_ALPHA 0.0645\u21920.030, rolling_var maxlen 5\u219210, _SCALER_FIT_SAMPLES 10\u2192100. (3) ram_leak multi-phase causal redesign \u2014 6 features across 4 phases (page_faults\u2192used+frag\u2192cached\u2193+cpu_system\u2192swap+latency\u2192jobs). (4) network_congestion edge enrichment \u2014 physical link attrs for cpu\u2194rc_switch edges elevated in bandwidth, latency, packet_loss.",
-    "current_version": "v3.0.0",
-    "previous_version": "v2.1.0"
+    "changelog": "Phase-2 hardening: BFS temporal propagation, rolling variance channel, cross-type signatures, healthy transient spikes",
+    "current_version": "v2.0.0",
+    "previous_version": "v1.0.0"
   }
 }
